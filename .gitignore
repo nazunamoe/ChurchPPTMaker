@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller 빌드 결과
+build/
+dist/
+*.spec
+
+# 사용자별 설정·데이터 (첫 실행 시 자동 생성)
+config.json
+presets.json
+*.json.tmp
+*.json.broken
+
+# 사용자 PPT 폴더 (첫 실행 시 자동 생성)
+templates/
+hymns/
+output/
+
+# PowerPoint 임시 파일
+~$*.pptx
