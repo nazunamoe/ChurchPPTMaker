@@ -176,6 +176,13 @@ Bible2PPT.exe <성경 구절...> [옵션]
   닫힐 때 아래 다이얼로그 grab 을 복구한다. 바인딩 해제는 `_unbind()` 사용 — Python 3.12 이하 `Misc.unbind(seq, funcid)` 는
   seq 의 바인딩을 **전부** 지워 아래 다이얼로그의 Esc/Enter 가 사라진다.
 - `PptEngine` 은 내부에서 CoInitialize/CoUninitialize 하므로 반드시 작업 스레드에서 `with` 로 사용.
+- **창 크기 조절 렉** (2026-10-07 실측, 순서 10개 기준 드래그 한 단계 약 480ms → 7ms):
+  1. Tk 창 클래스 `TkTopLevel`/`TkChild` 의 `CS_HREDRAW|CS_VREDRAW` 때문에 1px 만 바뀌어도 모든 하위 HWND 를 다시 그림
+     → `main._disable_full_redraw_on_resize` 가 시작 시 끔 (클래스 단위라 프로세스 전체 Tk 창에 적용, Tk 위젯은 스스로 다시 그림).
+  2. 위젯 수백 개 재배치 자체가 수백 ms → 모든 내용은 `App._content`(CTkFrame) 안에 두고, 창 `<Configure>` 가
+     `RESIZE_SETTLE_MS`(150ms) 동안 멈췄을 때만 `_fit_content` 로 실제 픽셀 크기를 지정(재배치 1회). 새 위젯은 `self` 가 아니라
+     `self._content` 에 grid 할 것 (오버레이 `_Modal`·달력은 그대로 창(`winfo_toplevel`)에 place).
+  - 참고: 일반 tk.Label 200개도 리사이즈당 ~200ms → Windows 에선 위젯(HWND) 수가 곧 비용. 목록형 UI 는 위젯 수를 줄일 것.
 
 ## 11-1. 보안 규칙 (2026-10-07 점검)
 - COM 으로 연 파일은 **보호된 보기 없이** 열리고, 자동화 기본값(`AutomationSecurity=1`)은 매크로를 허용한다(실측).

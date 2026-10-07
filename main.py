@@ -26,6 +26,7 @@ from worship_builder import BuildError, BuildRequest, WorshipBuilder, list_ppt_f
 APP_TITLE = "예배 순서 PPT 제작 프로그램 v1.0"
 DATE_FMT = "%Y-%m-%d"
 MODES = {"라이트": "Light", "다크": "Dark", "시스템": "System"}
+RESIZE_SETTLE_MS = 150  # 창 크기 조절이 이 시간 동안 멈추면 그때 내용 배치를 새 크기로 맞춤
 # PyInstaller onefile 은 번들 파일을 sys._MEIPASS 에 풀어 둠
 ICON_PATH = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets" / "app.ico"
 
@@ -35,6 +36,31 @@ def _set_app_user_model_id():
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ChurchPPTMaker.App")
+    except (AttributeError, OSError):
+        pass
+
+
+def _disable_full_redraw_on_resize(win: tk.Misc):
+    """Tk 창 클래스(TkTopLevel/TkChild)의 CS_HREDRAW·CS_VREDRAW 를 끈다.
+    켜져 있으면 창 크기가 1px 바뀔 때마다 Windows 가 모든 하위 위젯(수백 개 HWND)을 통째로 다시 그려
+    드래그 중 한 단계에 0.15초 이상 걸렸다(실측 152ms → 6ms). Tk 위젯은 자기 크기가 바뀌면 스스로 다시 그리므로 불필요.
+    클래스 단위 설정이라 이 프로세스의 모든 Tk 창에 적용된다."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        u.GetParent.restype = wintypes.HWND
+        u.GetParent.argtypes = [wintypes.HWND]
+        u.GetClassLongPtrW.restype = ctypes.c_size_t
+        u.GetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+        u.SetClassLongPtrW.restype = ctypes.c_size_t
+        u.SetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_size_t]
+        gcl_style, cs_redraw = -26, 0x0001 | 0x0002  # GCL_STYLE, CS_VREDRAW | CS_HREDRAW
+        inner = win.winfo_id()                       # TkChild
+        for hwnd in (u.GetParent(inner), inner):     # TkTopLevel(바깥 틀), TkChild
+            style = u.GetClassLongPtrW(hwnd, gcl_style)
+            if style & cs_redraw:
+                u.SetClassLongPtrW(hwnd, gcl_style, style & ~cs_redraw)
     except (AttributeError, OSError):
         pass
 
@@ -62,6 +88,7 @@ class App(ctk.CTk):
         if ICON_PATH.is_file():
             self.iconbitmap(default=str(ICON_PATH))  # CTk 기본 아이콘 대신 (default= 는 다이얼로그 등에도 적용)
         self._fit_to_screen(1220, 820)
+        _disable_full_redraw_on_resize(self)
 
         self.items: list[ServiceItem] = []
         self.row_widgets: list[ctk.CTkFrame] = []
@@ -76,8 +103,15 @@ class App(ctk.CTk):
 
         self.drag = DragController(self, self._on_drag_hover, self._on_drag_drop, self._on_drag_click)
 
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        # 창 크기 조절 렉 방지: 모든 내용을 컨테이너 하나에 담고, 크기 조절이 잠시 멈췄을 때만 새 크기로 맞춘다.
+        # (Windows 에서는 위젯 수백 개를 매 Configure 마다 재배치·재그리기 하느라 한 번에 0.5초 가까이 걸렸음)
+        self._content = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        tk.Place.place_configure(self._content, x=0, y=0, relwidth=1, relheight=1)  # CTk place 는 width/height 금지
+        self._content_size: tuple[int, int] | None = None
+        self._resize_job = None
+        self.bind("<Configure>", self._on_window_configure, add="+")
+        self._content.grid_columnconfigure(0, weight=1)
+        self._content.grid_rowconfigure(2, weight=1)
         self._build_header()
         self._build_info_bar()
         self._build_body()
@@ -91,6 +125,23 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         pump_ui_queue(self)
 
+    def _on_window_configure(self, e):
+        if e.widget is not self or (e.width, e.height) == self._content_size:
+            return
+        if self._content_size is None:  # 처음 표시될 때는 바로 맞춤
+            self._fit_content()
+            return
+        if self._resize_job is not None:
+            self.after_cancel(self._resize_job)
+        self._resize_job = self.after(RESIZE_SETTLE_MS, self._fit_content)
+
+    def _fit_content(self):
+        """컨테이너를 현재 창 크기(실제 픽셀)로 고정 → 내용 재배치는 여기서 한 번만 일어난다."""
+        self._resize_job = None
+        self._content_size = (self.winfo_width(), self.winfo_height())
+        tk.Place.place_configure(self._content, relwidth="", relheight="",
+                                 width=self._content_size[0], height=self._content_size[1])
+
     def _fit_to_screen(self, w: int, h: int):
         """화면 배율(DPI)을 고려해 창이 화면 밖으로 나가지 않게 크기/위치를 정한다."""
         self.update_idletasks()
@@ -102,7 +153,7 @@ class App(ctk.CTk):
 
     # ================================================================ 상단
     def _build_header(self):
-        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar = ctk.CTkFrame(self._content, fg_color="transparent")
         bar.grid(row=0, column=0, sticky="ew", padx=20, pady=(16, 8))
         ctk.CTkLabel(bar, text=APP_TITLE, font=font(20, "bold"), text_color=TEXT).pack(side="left")
         secondary_button(bar, "⚙  설정", self._open_settings, width=88).pack(side="right")
@@ -113,7 +164,7 @@ class App(ctk.CTk):
         self.mode_seg.pack(side="right", padx=10)
 
     def _build_info_bar(self):
-        bar = card(self)
+        bar = card(self._content)
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
 
         def label(text):
@@ -142,7 +193,7 @@ class App(ctk.CTk):
 
     # ================================================================ 본문
     def _build_body(self):
-        body = ctk.CTkFrame(self, fg_color="transparent")
+        body = ctk.CTkFrame(self._content, fg_color="transparent")
         body.grid(row=2, column=0, sticky="nsew", padx=20)
         body.grid_columnconfigure(0, weight=0, minsize=380)
         body.grid_columnconfigure(1, weight=1)
@@ -273,7 +324,7 @@ class App(ctk.CTk):
 
     # ================================================================ 하단
     def _build_bottom_bar(self):
-        bar = card(self)
+        bar = card(self._content)
         bar.grid(row=3, column=0, sticky="ew", padx=20, pady=(10, 16))
         bar.grid_columnconfigure(0, weight=1)
         left = ctk.CTkFrame(bar, fg_color="transparent")
