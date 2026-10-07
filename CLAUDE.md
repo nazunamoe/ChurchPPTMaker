@@ -121,6 +121,10 @@ ChurchPPTMaker/
   2. 토큰이 없으면 이름이 `내용n`(설정의 텍스트 상자 이름 + 번호)인 도형의 텍스트를 교체.
   3. 하위 호환: 1번 값은 예전 `{{내용}}` 토큰 / `내용` 도형에도 들어간다.
   4. 못 찾으면 경고 로그만 남기고 진행. 찬송가·CCM PPT 는 토큰이 없는 게 보통이라 경고하지 않음(`MergeJob.warn_missing`).
+  5. n 번 값이 비었으면 설정의 빈 칸 기본값(`ppt.fill_defaults[n-1]`)을 넣고, 기본값도 비면 **토큰 글자를 지움**
+     (결과에 `{{내용2}}` 가 남지 않게). 그래서 `_fill_text` 는 값이 없어도 모든 항목에 실행. 이름이 `내용n` 인 상자는
+     값·기본값이 없으면 그대로 둔다(상자 글자는 템플릿 문구). 기본값으로만 채운 자리는 못 찾아도 경고하지 않음.
+     `TextRange.Replace(…, "")` 로 지우는 동작은 실제 PowerPoint 로 확인함.
 - 전체 공통 토큰(모든 슬라이드): `{{교회이름}}`, `{{날짜}}`, `{{예배종류}}`.
 
 ## 6. Bible2PPT 연동 규칙 (bible_bridge.py)
@@ -175,7 +179,8 @@ Bible2PPT.exe <성경 구절...> [옵션]
   "bible2ppt": {"exe_path": "", "bible": "", "template": "", "lines": null, "timeout_sec": 180,
                 "bible_list": []},
   "item_templates": {"sermon_file": ""},
-  "ppt": {"text_placeholder": "{{내용}}", "text_shape_name": "내용", "open_after_build": true, "start_slideshow": false,
+  "ppt": {"text_placeholder": "{{내용}}", "text_shape_name": "내용", "fill_defaults": ["", "", ""],
+          "open_after_build": true, "start_slideshow": false,
           "merge_mode": "source_formatting"}
 }
 ```

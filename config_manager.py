@@ -7,7 +7,8 @@ import os
 import sys
 from pathlib import Path
 
-from models import DEFAULT_FILENAME_FORMAT, KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER, KIND_SERMON, ServiceItem
+from models import (DEFAULT_FILENAME_FORMAT, KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER, KIND_SERMON, MAX_FILL,
+                    ServiceItem)
 
 MAX_PRESETS = 10
 MAX_PRESET_NAME = 10
@@ -49,11 +50,18 @@ DEFAULT_CONFIG: dict = {
     "ppt": {
         "text_placeholder": "{{내용}}",
         "text_shape_name": "내용",
+        "fill_defaults": ["", "", ""],  # {{내용1}}~{{내용3}} 값이 비었을 때 넣을 문구 (비우면 토큰을 지움)
         "open_after_build": True,
         "start_slideshow": False,  # 생성 후 열 때 바로 슬라이드 쇼로 시작
         "merge_mode": "source_formatting",  # source_formatting | windowless
     },
 }
+
+
+def clean_fill_defaults(raw) -> list[str]:
+    """빈 칸 기본값을 정확히 MAX_FILL 개의 문자열로 (외부에서 고친 설정의 잘못된 값은 빈 문자열)."""
+    raw = raw if isinstance(raw, list) else []
+    return [(v if isinstance(v, str) else "") for v in raw[:MAX_FILL]] + [""] * (MAX_FILL - min(len(raw), MAX_FILL))
 
 
 def _item(kind, label, value="", **options):
@@ -135,6 +143,7 @@ class ConfigManager:
         # 외부에서 고친 설정의 역본 목록에 문자열이 아닌 값이 있으면 화면(검색·표시)에서 오류가 나므로 걸러 냄
         bl = self.data["bible2ppt"].get("bible_list")
         self.data["bible2ppt"]["bible_list"] = [x for x in bl if isinstance(x, str)] if isinstance(bl, list) else []
+        self.data["ppt"]["fill_defaults"] = clean_fill_defaults(self.data["ppt"].get("fill_defaults"))
         self.save()
         for key in ("template_dir", "hymn_dir", "ccm_dir", "prayer_dir", "output_dir"):
             try:

@@ -59,10 +59,12 @@ class PptEngineError(RuntimeError):
 
 class PptEngine:
     def __init__(self, log: LogFn | None = None, text_placeholder: str = "{{내용}}",
-                 text_shape_name: str = "내용", merge_mode: str = MERGE_SOURCE_FORMATTING):
+                 text_shape_name: str = "내용", merge_mode: str = MERGE_SOURCE_FORMATTING,
+                 fill_defaults: list[str] | None = None):
         self.log = log or (lambda m: None)
         self.text_placeholder = text_placeholder
         self.text_shape_name = text_shape_name
+        self.fill_defaults = list(fill_defaults or [])  # n 번 값이 비었을 때 넣을 문구 (없거나 비면 토큰을 지움)
         self.merge_mode = merge_mode
         self.app = None
         self._was_running = False
@@ -172,8 +174,7 @@ class PptEngine:
                 slides = [dest.Slides(i) for i in range(a, b + 1)]
                 for k, v in job.replacements.items():
                     self._replace_in_slides(slides, k, v)
-                if any(job.fill_values):
-                    self._fill_text(slides, job)
+                self._fill_text(slides, job)  # 값이 없어도 실행: 기본값을 넣거나 남은 토큰을 지움
 
             # 4) 공통 토큰 치환
             if global_replacements:
@@ -395,20 +396,27 @@ class PptEngine:
 
     def _fill_text(self, slides, job: MergeJob) -> None:
         """값 n 번째 → {{내용n}} 치환, 없으면 이름이 '내용n' 인 텍스트 상자에 입력.
-        1번은 예전 템플릿 호환을 위해 {{내용}} / '내용' 도 받는다."""
+        1번은 예전 템플릿 호환을 위해 {{내용}} / '내용' 도 받는다.
+        값이 비었으면 설정의 n 번 기본값을 넣고, 기본값도 비었으면 토큰 글자를 지운다 (결과에 '{{내용2}}' 가 남지 않도록).
+        이름이 '내용n' 인 텍스트 상자는 값이 없으면 그대로 둔다 (상자 글자는 템플릿이 정한 문구라서)."""
         missing = []
-        for n, value in enumerate(job.fill_values[:MAX_FILL], 1):
-            if not value:
-                continue
+        for n in range(1, MAX_FILL + 1):
+            given = job.fill_values[n - 1] if n <= len(job.fill_values) else ""
+            value = given or (self.fill_defaults[n - 1] if n <= len(self.fill_defaults) else "")
             tokens = [numbered_token(self.text_placeholder, n)]
             names = [f"{self.text_shape_name}{n}"] if self.text_shape_name else []
             if n == 1:
                 tokens.append(self.text_placeholder)
                 names.append(self.text_shape_name)
-            if sum(self._replace_in_slides(slides, t, value) for t in tokens if t):
+            tokens = [t for t in tokens if t]
+            if not value:
+                for t in tokens:
+                    self._replace_in_slides(slides, t, "")
                 continue
-            if not self._fill_shape(slides, [nm for nm in names if nm], value):
-                missing.append(tokens[0] or (names[0] if names else str(n)))
+            if sum(self._replace_in_slides(slides, t, value) for t in tokens):
+                continue
+            if not self._fill_shape(slides, [nm for nm in names if nm], value) and given:  # 기본값은 자리가 없어도 경고 안 함
+                missing.append(tokens[0] if tokens else (names[0] if names else str(n)))
         if missing and job.warn_missing:
             self.log(f"  ⚠ '{job.title}': 텍스트 입력 위치를 찾지 못했습니다 ({', '.join(missing)}). "
                      f"템플릿에 해당 토큰 또는 '{self.text_shape_name}1'~'{self.text_shape_name}{MAX_FILL}' "

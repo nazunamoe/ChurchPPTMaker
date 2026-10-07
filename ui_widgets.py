@@ -797,7 +797,26 @@ class SettingsDialog(_Modal):
                                 "토큰이 없으면 같은 이름의 텍스트 상자에 입력합니다. 번호 없는 기본형은 1번으로 취급합니다(예전 템플릿 호환).\n"
                                 "공통 토큰: {{교회이름}} {{날짜}} {{예배종류}}",
                      font=font(11), text_color=TEXT2, justify="left").grid(
-            row=r, column=0, columnspan=3, padx=16, pady=(2, 14), sticky="w")
+            row=r, column=0, columnspan=3, padx=16, pady=(2, 6), sticky="w")
+        r += 1
+
+        section("빈 칸일 때 기본값")
+        defaults = list(p.get("fill_defaults") or [])
+        self.fill_defaults: list[ctk.CTkEntry] = []
+        self._default_labels: list[ctk.CTkLabel] = []
+        for n in range(1, MAX_FILL + 1):
+            lbl = ctk.CTkLabel(body, text="", font=font(13), text_color=TEXT, anchor="w", width=150)
+            lbl.grid(row=r, column=0, padx=16, pady=4, sticky="w")
+            e = ctk.CTkEntry(body, width=320, font=font(13), placeholder_text="값이 비었을 때 넣을 문구 (비우면 토큰 지움)")
+            if n <= len(defaults) and defaults[n - 1]:
+                e.insert(0, defaults[n - 1])
+            e.grid(row=r, column=1, pady=(4, 14 if n == MAX_FILL else 4), sticky="w")
+            self.fill_defaults.append(e)
+            self._default_labels.append(lbl)
+            r += 1
+        # 기본값 칸 이름은 치환 토큰을 바꾸면 따라 바뀜 ({{내용1}} …)
+        self.placeholder.bind("<KeyRelease>", lambda e: self._update_default_labels(), add="+")
+        self._update_default_labels()
         self.page_seg.set(self.PAGES[0])
         self._show_page(self.PAGES[0])
 
@@ -815,6 +834,11 @@ class SettingsDialog(_Modal):
             entry.delete(0, "end")
             entry.insert(0, path)
         return bool(path)
+
+    def _update_default_labels(self):
+        base = self.placeholder.get().strip()
+        for n, lbl in enumerate(self._default_labels, 1):
+            lbl.configure(text=numbered_token(base, n) if base else f"{n}번")
 
     def _show_page(self, name: str):
         self.page_seg.set(name)
@@ -922,6 +946,7 @@ class SettingsDialog(_Modal):
         self.cfg.get("item_templates").update(sermon_file=sermon_raw)
         p = self.cfg.get("ppt")
         p.update(text_placeholder=self.placeholder.get().strip(), text_shape_name=self.shape_name.get().strip(),
+                 fill_defaults=[e.get().strip() for e in self.fill_defaults],
                  merge_mode=MERGE_MODES[self.merge_mode.get()])
         self.cfg.save()
         self.result = True
