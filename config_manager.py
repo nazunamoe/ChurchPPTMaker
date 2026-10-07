@@ -219,3 +219,24 @@ class PresetManager:
     def delete(self, name: str) -> None:
         self.presets = [p for p in self.presets if p["name"] != name]
         self.save()
+
+
+def save_worship_to_text(path: Path, items: list[ServiceItem], metadata: dict) -> None:
+    """예배 순서를 텍스트 파일로 저장."""
+    from models import export_to_text
+    text = export_to_text(
+        items,
+        church_name=metadata.get("church_name", ""),
+        worship_type=metadata.get("worship_type", ""),
+        date_str=metadata.get("date", "")
+    )
+    with open(path, "w", encoding="utf-8-sig") as f:
+        f.write(text)
+
+
+def load_worship_from_text(path: Path) -> tuple[list[ServiceItem], dict]:
+    """텍스트 파일에서 예배 순서를 읽어옴."""
+    from models import import_from_text
+    with open(path, "r", encoding="utf-8-sig") as f:
+        text = f.read()
+    return import_from_text(text)

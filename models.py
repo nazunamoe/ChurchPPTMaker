@@ -91,3 +91,65 @@ def validate_item(item: ServiceItem) -> str | None:
     if item.kind == KIND_CUSTOM and not item.label:
         return "호출할 PPT 이름을 입력해 주세요."
     return None
+
+
+def export_to_text(items: list[ServiceItem], church_name: str = "", worship_type: str = "", date_str: str = "") -> str:
+    """예배 순서를 텍스트 형식으로 변환."""
+    lines = []
+    if church_name: lines.append(f"# 교회이름: {church_name}")
+    if worship_type: lines.append(f"# 예배종류: {worship_type}")
+    if date_str: lines.append(f"# 날짜: {date_str}")
+    lines.append("")
+
+    for item in items:
+        # [kind]label|value|bible (options)
+        opt_str = ""
+        if item.kind == KIND_BIBLE and "bible" in item.options:
+            opt_str = f"|{item.options['bible']}"
+
+        lines.append(f"[{item.kind}]{item.label}|{item.value}{opt_str}")
+
+    return "\n".join(lines)
+
+
+def import_from_text(text: str) -> tuple[list[ServiceItem], dict[str, str]]:
+    """텍스트 형식을 읽어 ServiceItem 리스트와 메타 정보 반환."""
+    items = []
+    meta = {}
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line: continue
+
+        if line.startswith("#"):
+            if ":" in line:
+                k, v = line[1:].split(":", 1)
+                meta[k.strip()] = v.strip()
+            continue
+
+        if line.startswith("[") and "]" in line:
+            try:
+                end_idx = line.find("]")
+                kind = line[1:end_idx]
+                rest = line[end_idx+1:].strip()
+
+                if not rest: continue
+
+                if kind not in KIND_LABELS:
+                    kind = KIND_CUSTOM
+                parts = rest.split("|", 2)
+                label = parts[0].strip()
+                value = parts[1].strip() if len(parts) > 1 else ""
+
+                opts = {}
+                if kind == KIND_BIBLE and len(parts) > 2 and parts[2].strip():
+                    opts["bible"] = parts[2].strip()
+
+                # 기본 검증/정규화 적용 (검증 실패 항목은 건너뜀)
+                item = make_item(kind, label, value, opts)
+                if validate_item(item) is None:
+                    items.append(item)
+            except Exception:
+                continue # 잘못된 라인은 건너뜀
+
+    return items, meta

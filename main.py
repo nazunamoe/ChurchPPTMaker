@@ -15,7 +15,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, parse_references
-from config_manager import MAX_PRESETS, ConfigManager, PresetManager
+from config_manager import MAX_PRESETS, ConfigManager, PresetManager, save_worship_to_text, load_worship_from_text
 from models import (KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, ServiceItem, make_item,
                     validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
@@ -232,6 +232,11 @@ class App(ctk.CTk):
         self.count_label.pack(side="left", padx=8)
         ctk.CTkButton(head, text="전체 비우기", width=80, height=28, fg_color="transparent", hover_color=BTN_HOVER,
                       text_color=DANGER, font=font(12), command=self._clear_items).pack(side="right")
+        # 파일 입출력: 프리셋 행과 헷갈리지 않도록 제목 줄에 둠 → [파일 불러오기] [파일 내보내기] [전체 비우기]
+        for text, cmd in (("파일 내보내기", self._export_worship_file), ("파일 불러오기", self._import_worship_file)):
+            b = secondary_button(head, text, cmd, width=96)
+            b.configure(height=28, font=font(12))
+            b.pack(side="right", padx=(0, 6))
 
         # 프리셋 행: [프리셋 ▼] [저장] [불러오기] [삭제]
         prow = ctk.CTkFrame(oc, fg_color="transparent")
@@ -694,6 +699,71 @@ class App(ctk.CTk):
         self._refresh_presets()
         self.preset_combo.set("")
         self._set_status(f"프리셋 '{name}' 삭제됨")
+
+    def _import_worship_file(self):
+        """외부 텍스트 파일에서 예배 순서를 불러옴."""
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="예배 순서 파일 선택",
+            filetypes=[("텍스트 파일", "*.txt"), ("모든 파일", "*.*")]
+        )
+        if not path:
+            return
+
+        try:
+            items, meta = load_worship_from_text(Path(path))
+            if not items:
+                messagebox.showwarning("불러오기 실패", "유효한 예배 순서 항목이 파일에 없습니다.", parent=self)
+                return
+
+            if self.items and not messagebox.askyesno("불러오기", "현재 순서를 파일 내용으로 대체할까요?\n'아니오'를 누르면 아래에 추가됩니다.", parent=self):
+                self.items = self.items + items
+            else:
+                self.items = items
+
+            # 메타 정보 반영
+            if "교회이름" in meta:
+                self.church_entry.delete(0, "end")
+                self.church_entry.insert(0, meta["교회이름"])
+            if "예배종류" in meta:
+                self.worship_entry.delete(0, "end")
+                self.worship_entry.insert(0, meta["예배종류"])
+            if "날짜" in meta:
+                self.date_entry.delete(0, "end")
+                self.date_entry.insert(0, meta["날짜"])
+
+            self._save_basic()
+            self._render_list()
+            self._set_status(f"파일에서 {len(items)}개 항목을 불러왔습니다.")
+
+        except Exception as e:
+            messagebox.showerror("불러오기 오류", f"파일을 읽는 중 오류가 발생했습니다:\n{e}", parent=self)
+
+    def _export_worship_file(self):
+        """현재 예배 순서를 텍스트 파일로 내보냄."""
+        if not self.items:
+            messagebox.showerror("내보내기 실패", "내보낼 예배 순서가 없습니다.", parent=self)
+            return
+
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="예배 순서 내보내기",
+            defaultextension=".txt",
+            filetypes=[("텍스트 파일", "*.txt"), ("모든 파일", "*.*")]
+        )
+        if not path:
+            return
+
+        try:
+            meta = {
+                "church_name": self.church_entry.get().strip(),
+                "worship_type": self.worship_entry.get().strip(),
+                "date": self.date_entry.get().strip(),
+            }
+            save_worship_to_text(Path(path), self.items, meta)
+            self._set_status(f"파일로 저장되었습니다: {Path(path).name}")
+        except Exception as e:
+            messagebox.showerror("내보내기 오류", f"파일을 저장하는 중 오류가 발생했습니다:\n{e}", parent=self)
 
     # ================================================================ 생성
     def _build(self):
