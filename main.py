@@ -110,6 +110,7 @@ class App(ctk.CTk):
         _disable_full_redraw_on_resize(self)
 
         self.items: list[ServiceItem] = []
+        self.path_vars: dict[str, tk.StringVar] = {}  # 폴더 키 → 화면에 표시하는 경로 (_choose_folder 가 갱신)
         self.row_widgets: list[tk.Frame] = []
         self._shown_files: list[str] = []  # 템플릿 목록 상자에 보이는 순서대로의 파일 이름
         self.selected_file: str | None = None
@@ -269,8 +270,19 @@ class App(ctk.CTk):
         self.worship_entry.bind("<KeyRelease>", on_change)
 
         # 결과 파일 이름 형식: {항목} 자리에 값이 들어감. 프리셋을 저장하면 함께 저장되고, 불러오면 프리셋의 형식으로 바뀜
-        label(line2, "파일 이름").pack(side="left", padx=(8, 8), pady=(5, 6))
-        self.format_entry = ctk.CTkEntry(line2, width=300, height=34, font=font(13),
+        # 출력 폴더: 결과 파일이 저장되는 곳이라 파일 이름 형식 바로 왼쪽에 둔다
+        label(line2, "출력 폴더").pack(side="left", padx=(8, 8), pady=(5, 6))
+        var = tk.StringVar(value=str(self.cfg.resolve_path("output_dir")))
+        self.path_vars["output_dir"] = var
+        ctk.CTkEntry(line2, textvariable=var, state="readonly", width=180, height=34, font=font(12),
+                     text_color=TEXT2).pack(side="left")
+        for text, cmd in (("📁", lambda: self._choose_folder("output_dir")), ("↗", lambda: self._open_folder("output_dir"))):
+            b = secondary_button(line2, text, cmd, width=34)
+            b.configure(height=34)
+            b.pack(side="left", padx=(4, 0))
+
+        label(line2, "파일 이름").pack(side="left", padx=(20, 8))
+        self.format_entry = ctk.CTkEntry(line2, width=230, height=34, font=font(13),
                                          placeholder_text=DEFAULT_FILENAME_FORMAT)
         self.format_entry.insert(0, self.cfg.get("filename_format") or DEFAULT_FILENAME_FORMAT)
         self.format_entry.pack(side="left")
@@ -338,9 +350,8 @@ class App(ctk.CTk):
         fc.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(fc, text="폴더", font=font(15, "bold"), text_color=TEXT).grid(
             row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(10, 4))
-        self.path_vars: dict[str, tk.StringVar] = {}
-        # 템플릿 폴더는 그 폴더의 파일을 보여 주는 [템플릿 파일] 카드 맨 위에 둔다
-        folders = [("prayer_dir", "기도"), ("hymn_dir", "찬송가"), ("ccm_dir", "CCM"), ("output_dir", "출력")]
+        # 템플릿 폴더는 [템플릿 파일] 카드 맨 위, 출력 폴더는 상단 파일 이름 줄에 둔다
+        folders = [("prayer_dir", "기도"), ("hymn_dir", "찬송가"), ("ccm_dir", "CCM")]
         for r, (key, name) in enumerate(folders, 1):
             self._folder_row(fc, r, key, name)
         ctk.CTkFrame(fc, width=1, height=6, fg_color="transparent").grid(row=len(folders) + 1, column=0)
