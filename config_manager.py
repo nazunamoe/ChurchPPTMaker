@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from models import KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER, ServiceItem
+from models import KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER, KIND_SERMON, ServiceItem
 
 MAX_PRESETS = 10
 MAX_PRESET_NAME = 10
@@ -49,8 +49,8 @@ DEFAULT_CONFIG: dict = {
 }
 
 
-def _item(kind, label, value=""):
-    return ServiceItem(kind, label, value).to_dict()
+def _item(kind, label, value="", **options):
+    return ServiceItem(kind, label, value, options).to_dict()
 
 
 DEFAULT_PRESETS = [
@@ -59,7 +59,7 @@ DEFAULT_PRESETS = [
         _item(KIND_HYMN, "찬송", "8장"),
         _item(KIND_PRAYER, "기도", "OOO장로"),
         _item(KIND_BIBLE, "말씀", "요3:16"),
-        _item(KIND_CUSTOM, "설교"),
+        _item(KIND_SERMON, "설교", "설교 제목", preacher="OOO목사"),
         _item(KIND_HYMN, "찬송", "29장"),
         _item(KIND_CUSTOM, "축도"),
     ]},

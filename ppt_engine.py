@@ -26,6 +26,8 @@ import pythoncom
 import pywintypes
 import win32com.client
 
+from models import MAX_FILL
+
 MSO_TRUE = -1
 MSO_FALSE = 0
 MSO_GROUP = 6
@@ -46,7 +48,8 @@ LogFn = Callable[[str], None]
 class MergeJob:
     source: Path
     title: str                                   # 로그/오류 표시용 (예: "찬송 29장")
-    fill_text: str | None = None                 # 지정 텍스트 박스에 넣을 문구
+    fill_values: list[str] = field(default_factory=list)  # {{내용1}}~{{내용3}} 에 넣을 문구 (빈 값은 건너뜀)
+    warn_missing: bool = True                    # 입력 위치가 없을 때 경고 (찬송가 PPT 는 토큰이 없는 게 보통)
     replacements: dict[str, str] = field(default_factory=dict)
 
 
@@ -169,7 +172,7 @@ class PptEngine:
                 slides = [dest.Slides(i) for i in range(a, b + 1)]
                 for k, v in job.replacements.items():
                     self._replace_in_slides(slides, k, v)
-                if job.fill_text:
+                if any(job.fill_values):
                     self._fill_text(slides, job)
 
             # 4) 공통 토큰 치환
@@ -391,21 +394,47 @@ class PptEngine:
         return total
 
     def _fill_text(self, slides, job: MergeJob) -> None:
-        if self.text_placeholder and self._replace_in_slides(slides, self.text_placeholder, job.fill_text):
-            return
-        if self.text_shape_name:
-            for slide in slides:
-                for i in range(1, slide.Shapes.Count + 1):
-                    shp = slide.Shapes(i)
-                    try:
-                        if shp.Name == self.text_shape_name and shp.HasTextFrame:
-                            shp.TextFrame.TextRange.Text = job.fill_text
-                            return
-                    except pywintypes.com_error:
-                        continue
-        self.log(f"  ⚠ '{job.title}': 텍스트 입력 위치를 찾지 못했습니다. "
-                 f"템플릿에 '{self.text_placeholder}' 문구 또는 '{self.text_shape_name}' 이름의 텍스트 상자를 넣어 주세요.")
+        """값 n 번째 → {{내용n}} 치환, 없으면 이름이 '내용n' 인 텍스트 상자에 입력.
+        1번은 예전 템플릿 호환을 위해 {{내용}} / '내용' 도 받는다."""
+        missing = []
+        for n, value in enumerate(job.fill_values[:MAX_FILL], 1):
+            if not value:
+                continue
+            tokens = [numbered_token(self.text_placeholder, n)]
+            names = [f"{self.text_shape_name}{n}"] if self.text_shape_name else []
+            if n == 1:
+                tokens.append(self.text_placeholder)
+                names.append(self.text_shape_name)
+            if sum(self._replace_in_slides(slides, t, value) for t in tokens if t):
+                continue
+            if not self._fill_shape(slides, [nm for nm in names if nm], value):
+                missing.append(tokens[0] or (names[0] if names else str(n)))
+        if missing and job.warn_missing:
+            self.log(f"  ⚠ '{job.title}': 텍스트 입력 위치를 찾지 못했습니다 ({', '.join(missing)}). "
+                     f"템플릿에 해당 토큰 또는 '{self.text_shape_name}1'~'{self.text_shape_name}{MAX_FILL}' "
+                     "이름의 텍스트 상자를 넣어 주세요.")
 
+    @staticmethod
+    def _fill_shape(slides, names: list[str], value: str) -> bool:
+        for slide in slides:
+            for i in range(1, slide.Shapes.Count + 1):
+                shp = slide.Shapes(i)
+                try:
+                    if shp.Name in names and shp.HasTextFrame:
+                        shp.TextFrame.TextRange.Text = value
+                        return True
+                except pywintypes.com_error:
+                    continue
+        return False
+
+
+def numbered_token(base: str, n: int) -> str:
+    """'{{내용}}' → '{{내용1}}' (닫는 '}}' 앞에 번호). '}}' 로 끝나지 않으면 끝에 붙임."""
+    if not base:
+        return ""
+    if base.endswith("}}") and len(base) > 2:
+        return f"{base[:-2]}{n}}}}}"
+    return f"{base}{n}"
 
 def _replace_all(text_range, find: str, repl: str, limit: int = 200) -> int:
     """TextRange.Replace 는 한 번에 하나만 바꾸므로 반복 (글자 서식 유지)."""

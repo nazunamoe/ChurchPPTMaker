@@ -16,7 +16,7 @@ import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, parse_references
 from config_manager import MAX_PRESETS, ConfigManager, PresetManager, save_worship_to_text, load_worship_from_text
-from models import (KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, ServiceItem, make_item,
+from models import (KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, ServiceItem, make_item,
                     validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
                         TEXT2, BibleField, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog,
@@ -258,10 +258,10 @@ class App(ctk.CTk):
         self.scroll.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         self.scroll.grid_columnconfigure(0, weight=1)
 
-        # 팔레트: [기도] [찬송] [말씀] [사용자 지정] — 드래그&드롭
+        # 팔레트: [기도] [찬송] [말씀] [설교] [사용자 지정] — 드래그&드롭
         pal = ctk.CTkFrame(oc, fg_color="transparent")
         pal.grid(row=3, column=0, sticky="ew", padx=16, pady=(10, 4))
-        for kind in (KIND_PRAYER, KIND_HYMN, KIND_BIBLE, KIND_CUSTOM):
+        for kind in (KIND_PRAYER, KIND_HYMN, KIND_BIBLE, KIND_SERMON, KIND_CUSTOM):
             b = ctk.CTkButton(pal, text=KIND_LABELS[kind], width=96 if kind != KIND_CUSTOM else 120, height=38,
                               corner_radius=8, fg_color=CARD, hover_color=BTN_HOVER, border_width=2,
                               border_color=KIND_COLORS[kind], text_color=TEXT, font=font(14, "bold"))
@@ -312,7 +312,7 @@ class App(ctk.CTk):
         self.indicator = ctk.CTkFrame(self.scroll, height=4, fg_color=ACCENT, corner_radius=0, border_width=0)
 
         if not self.items:
-            ctk.CTkLabel(self.scroll, text="아래 [기도] [찬송] [말씀] [사용자 지정] 버튼을 끌어다 놓아\n예배 순서를 추가하세요.",
+            ctk.CTkLabel(self.scroll, text="아래 [기도] [찬송] [말씀] [설교] [사용자 지정] 버튼을 끌어다 놓아\n예배 순서를 추가하세요.",
                          font=font(13), text_color=TEXT2, justify="center").pack(pady=60)
         for idx, item in enumerate(self.items):
             self.row_widgets.append(self._make_row(idx, item))
@@ -324,7 +324,7 @@ class App(ctk.CTk):
 
         handle = ctk.CTkLabel(row, text="⋮⋮", width=22, font=font(14, "bold"), text_color=TEXT2, cursor="fleur")
         handle.pack(side="left", padx=(2, 6))
-        self.drag.attach(handle, ("move", idx), f"{item.label}  {item.value}".strip())
+        self.drag.attach(handle, ("move", idx), f"{item.label}  {item.display_value}".strip())
 
         left = ctk.CTkButton(row, text=item.label, width=140, height=36, corner_radius=10, fg_color=CARD,
                              hover_color=BTN_HOVER, border_width=2, border_color=KIND_COLORS[item.kind],
@@ -333,7 +333,7 @@ class App(ctk.CTk):
         ctk.CTkFrame(row, height=3, fg_color=PILL_BORDER, corner_radius=0, border_width=0).pack(side="left", fill="x", expand=True)
         right = ctk.CTkButton(row, text=item.display_value, width=170, height=36, corner_radius=10, fg_color=CARD,
                               hover_color=BTN_HOVER, border_width=1, border_color=PILL_BORDER,
-                              text_color=TEXT if item.value else TEXT2, font=font(13),
+                              text_color=TEXT if item.display_value != "—" else TEXT2, font=font(13),
                               command=lambda i=idx: self._edit_item(i))
         right.pack(side="left")
 

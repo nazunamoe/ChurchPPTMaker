@@ -12,7 +12,8 @@ from typing import Any, Callable
 import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, bible_sources, filter_bibles, short_source, split_bible
-from models import KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, ServiceItem, make_item, validate_item
+from models import (KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, ServiceItem,
+                    make_item, validate_item)
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
 FONT_FAMILY = "Malgun Gothic"
@@ -32,6 +33,7 @@ KIND_COLORS = {
     KIND_PRAYER: ("#0F7B0F", "#6CCB5F"),
     KIND_HYMN: ("#8764B8", "#B69CE0"),
     KIND_BIBLE: ("#C35A00", "#F7A35C"),
+    KIND_SERMON: ("#B4235A", "#F28AB0"),
     KIND_CUSTOM: ("#0067C0", "#60CDFF"),
 }
 
@@ -412,7 +414,7 @@ class BibleField(ctk.CTkFrame):
 
 # ---------------------------------------------------------------- 항목 입력 다이얼로그
 class ItemDialog(_Modal):
-    """기도/찬송/말씀/사용자 지정 입력. 필수값 미입력 시 에러 창."""
+    """기도/찬송/말씀/설교/사용자 지정 입력. 필수값 미입력 시 에러 창."""
 
     def __init__(self, master, kind: str, item: ServiceItem | None = None,
                  template_names: list[str] | None = None, bible_values: list[str] | None = None,
@@ -429,6 +431,7 @@ class ItemDialog(_Modal):
 
         self.label_widget = None
         self.bible_widget = None
+        self.preacher_entry = None
         row = 1
         if kind == KIND_CUSTOM:
             self._lbl(body, row, "호출할 PPT 이름 *")
@@ -442,6 +445,7 @@ class ItemDialog(_Modal):
             KIND_PRAYER: ("기도자 이름 *", "예: 홍길동 장로"),
             KIND_HYMN: ("찬송가 장 *", "예: 29  또는  29장"),
             KIND_BIBLE: ("성경 구절 *", "예: 창1:1-5, 롬1-3"),
+            KIND_SERMON: ("설교 제목 *", "예: 믿음의 사람"),
             KIND_CUSTOM: ("오른쪽 문구 (선택)", "예: 인도자"),
         }[kind]
         self._lbl(body, row, prompt)
@@ -451,6 +455,16 @@ class ItemDialog(_Modal):
         self.value_entry.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
         row += 1
 
+        if kind == KIND_SERMON:
+            self._lbl(body, row, "설교자 *")
+            self.preacher_entry = ctk.CTkEntry(body, width=260, placeholder_text="예: 홍길동 목사", font=font(13))
+            if self.options.get("preacher"):
+                self.preacher_entry.insert(0, self.options["preacher"])
+            self.preacher_entry.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
+            row += 1
+            ctk.CTkLabel(body, text="템플릿 폴더의 '설교' PPT 에서 제목은 {{내용1}}, 설교자는 {{내용2}} 자리에 들어갑니다.",
+                         font=font(11), text_color=TEXT2).grid(row=row, column=0, columnspan=2, padx=16, sticky="w")
+            row += 1
         if kind == KIND_BIBLE:
             self._lbl(body, row, "성경 역본 (선택)")
             self.bible_widget = BibleField(body, values=bible_values, width=260, placeholder="비우면 기본 역본")
@@ -488,6 +502,8 @@ class ItemDialog(_Modal):
                 self.options["bible"] = b
             else:
                 self.options.pop("bible", None)
+        if self.preacher_entry is not None:
+            self.options["preacher"] = self.preacher_entry.get()
         item = make_item(self.kind, label, self.value_entry.get(), self.options)
         err = validate_item(item)
         if err:
@@ -570,7 +586,9 @@ class SettingsDialog(_Modal):
         row("치환 토큰", self.placeholder)
         self.shape_name = entry(p.get("text_shape_name"), width=200)
         row("텍스트 상자 이름", self.shape_name)
-        ctk.CTkLabel(body, text="템플릿의 치환 토큰을 오른쪽 문구로 바꿉니다. 토큰이 없으면 같은 이름의 텍스트 상자에 입력합니다.\n"
+        ctk.CTkLabel(body, text="치환 토큰에 번호를 붙인 {{내용1}}~{{내용3}} 을 항목 값으로 바꿉니다 "
+                                "(기도·찬송·사용자 지정: 1, 설교: 1=제목 2=설교자).\n"
+                                "토큰이 없으면 이름이 내용1~내용3 인 텍스트 상자에 입력합니다. 예전 {{내용}} 은 내용1 로 취급합니다.\n"
                                 "공통 토큰: {{교회이름}} {{날짜}} {{예배종류}}",
                      font=font(11), text_color=TEXT2, justify="left").grid(
             row=r, column=0, columnspan=3, padx=16, pady=(2, 14), sticky="w")

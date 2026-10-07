@@ -9,11 +9,15 @@ KIND_CUSTOM = "custom"   # 왼쪽 이름의 PPT 호출 (+선택 문구)
 KIND_PRAYER = "prayer"   # 기도.pptx 호출 + 기도자 이름 입력
 KIND_HYMN = "hymn"       # 오른쪽 장 번호로 찬송가 폴더에서 검색
 KIND_BIBLE = "bible"     # Bible2PPT 로 구절 PPT 생성
+KIND_SERMON = "sermon"   # 설교.pptx 호출 + 설교 제목({{내용1}})·설교자({{내용2}}) 입력
+
+MAX_FILL = 3             # 항목당 텍스트 입력칸 수 ({{내용1}} ~ {{내용3}})
 
 KIND_LABELS = {
     KIND_PRAYER: "기도",
     KIND_HYMN: "찬송",
     KIND_BIBLE: "말씀",
+    KIND_SERMON: "설교",
     KIND_CUSTOM: "사용자 지정",
 }
 
@@ -39,7 +43,18 @@ class ServiceItem:
 
     @property
     def display_value(self) -> str:
+        if self.kind == KIND_SERMON:
+            return " · ".join(v for v in (self.value, self.options.get("preacher", "")) if v) or "—"
         return self.value if self.value else "—"
+
+    @property
+    def fill_values(self) -> list[str]:
+        """템플릿의 {{내용1}}~{{내용N}} 에 들어갈 값 (빈 값은 입력하지 않음)."""
+        if self.kind == KIND_SERMON:
+            return [self.value, self.options.get("preacher", "")]
+        if self.kind in (KIND_PRAYER, KIND_HYMN, KIND_CUSTOM):
+            return [self.value]
+        return []
 
 
 def normalize_hymn(value: str) -> str:
@@ -69,6 +84,10 @@ def make_item(kind: str, label: str, value: str, options: dict | None = None) ->
         value = normalize_hymn(value)
     elif kind == KIND_BIBLE:
         label = "말씀"
+    elif kind == KIND_SERMON:
+        label = "설교"
+        options = dict(options or {})
+        options["preacher"] = str(options.get("preacher", "")).strip()
     return ServiceItem(kind, label, value, dict(options or {}))
 
 
@@ -88,6 +107,11 @@ def validate_item(item: ServiceItem) -> str | None:
             parse_references(item.value)
         except ValueError as e:
             return str(e)
+    if item.kind == KIND_SERMON:
+        if not item.value:
+            return "설교 제목을 입력해 주세요."
+        if not item.options.get("preacher"):
+            return "설교자를 입력해 주세요."
     if item.kind == KIND_CUSTOM and not item.label:
         return "호출할 PPT 이름을 입력해 주세요."
     return None
@@ -102,10 +126,12 @@ def export_to_text(items: list[ServiceItem], church_name: str = "", worship_type
     lines.append("")
 
     for item in items:
-        # [kind]label|value|bible (options)
+        # [kind]label|value|역본(말씀) 또는 설교자(설교)
         opt_str = ""
         if item.kind == KIND_BIBLE and "bible" in item.options:
             opt_str = f"|{item.options['bible']}"
+        elif item.kind == KIND_SERMON:
+            opt_str = f"|{item.options.get('preacher', '')}"
 
         lines.append(f"[{item.kind}]{item.label}|{item.value}{opt_str}")
 
@@ -144,6 +170,8 @@ def import_from_text(text: str) -> tuple[list[ServiceItem], dict[str, str]]:
                 opts = {}
                 if kind == KIND_BIBLE and len(parts) > 2 and parts[2].strip():
                     opts["bible"] = parts[2].strip()
+                elif kind == KIND_SERMON and len(parts) > 2:
+                    opts["preacher"] = parts[2].strip()
 
                 # 기본 검증/정규화 적용 (검증 실패 항목은 건너뜀)
                 item = make_item(kind, label, value, opts)

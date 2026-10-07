@@ -10,7 +10,7 @@ from typing import Callable
 
 from bible_bridge import Bible2PPT, Bible2PPTError
 from config_manager import ConfigManager
-from models import KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER, ServiceItem, hymn_number
+from models import KIND_BIBLE, KIND_HYMN, KIND_PRAYER, KIND_SERMON, ServiceItem, hymn_number
 from ppt_engine import MERGE_SOURCE_FORMATTING, MergeJob, PptEngine, PptEngineError
 
 PPT_EXTS = (".pptx", ".pptm", ".ppt")
@@ -107,7 +107,7 @@ class WorshipBuilder:
                 if not p:
                     problems.append(f"{idx}. 찬송 '{it.value}' — 찬송가 폴더에서 PPT 를 찾지 못함")
             else:
-                name = "기도" if it.kind == KIND_PRAYER else it.label
+                name = {KIND_PRAYER: "기도", KIND_SERMON: "설교"}.get(it.kind, it.label)
                 p = find_template(tdir, name)
                 if not p:
                     problems.append(f"{idx}. '{name}' — 템플릿 폴더에 '{name}.pptx' 없음")
@@ -162,9 +162,9 @@ class WorshipBuilder:
             pcfg = self.cfg.get("ppt")
             jobs = []
             for it, p in zip(req.items, paths):
-                title = f"{it.label} {it.value}".strip()
-                fill = it.value if it.kind in (KIND_PRAYER, KIND_CUSTOM) and it.value else None
-                jobs.append(MergeJob(source=p, title=title, fill_text=fill))
+                title = f"{it.label} {it.display_value if it.kind == KIND_SERMON else it.value}".strip()
+                jobs.append(MergeJob(source=p, title=title, fill_values=it.fill_values,
+                                     warn_missing=it.kind != KIND_HYMN))
 
             base = 0.4 if n_bible else 0.0
 
