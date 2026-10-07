@@ -37,7 +37,8 @@ ChurchPPTMaker/
 ├─ presets.json        예배 순서 프리셋 (첫 실행 시 기본 3종 생성)
 ├─ templates/          순서별 PPT 템플릿 (기본 폴더, 설정에서 변경 가능)
 ├─ hymns/              찬송가 PPT 폴더 (기본, 하위 폴더까지 검색)
-└─ output/             생성 결과 저장 폴더 (기본)
+├─ output/             생성 결과 저장 폴더 (기본)
+└─ data/               실제 예배 PPT를 순서별로 나눈 자료 (git 제외). templates/·hymns/ 하위 폴더, 순서.txt에 원본 순서 기록
 ```
 
 ## 4. UI 레이아웃 (최초 UI 초안 기준)

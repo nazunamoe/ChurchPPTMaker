@@ -21,3 +21,7 @@ output/
 
 # PowerPoint 임시 파일
 ~$*.pptx
+
+# 실제 예배 PPT 자료 (개인 자료, 용량 큼)
+data/
+/*.pptx
