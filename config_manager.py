@@ -40,6 +40,9 @@ DEFAULT_CONFIG: dict = {
         "timeout_sec": 180,
         "bible_list": [],  # --list-bibles 결과 캐시 (exe 지정·↻ 시 갱신)
     },
+    "item_templates": {
+        "prayer_dir": "",  # 기도 템플릿 폴더 (합심기도.pptx, 중보기도.pptx … — 기도 추가 시 하나 선택)
+    },
     "ppt": {
         "text_placeholder": "{{내용}}",
         "text_shape_name": "내용",

@@ -36,7 +36,7 @@ ChurchPPTMaker/
 ├─ main.py             진입점 + 메인 윈도우(App), 패널 구성, 드래그&드롭, 프리셋/생성 이벤트
 ├─ ui_widgets.py       재사용 위젯: 공통 색/폰트, _Modal(창 내부 오버레이 다이얼로그), CalendarPopup, ItemDialog,
 │                      BiblePicker(역본 검색 창)/BibleField(입력칸+🔍),
-│                      SettingsDialog, LogDialog, DragController, 스레드→UI 큐(post_to_ui/run_in_thread)
+│                      SettingsDialog(2쪽: Bible2PPT·기도·설교 / 병합·텍스트), LogDialog, DragController, 스레드→UI 큐(post_to_ui/run_in_thread)
 ├─ models.py           ServiceItem 데이터 모델 + 항목 종류(KIND_*) 정의, 입력 검증
 ├─ config_manager.py   config.json / presets.json 읽기·쓰기, 기본값 병합, 프리셋 규칙 검증
 ├─ bible_bridge.py     Bible2PPT CLI 래퍼 (구절 정규화/검증, 실행, --list-bibles)
@@ -75,7 +75,7 @@ ChurchPPTMaker/
 - 좌측 템플릿 파일 목록: 클릭=선택, 더블클릭=맨 아래 추가, 순서 목록으로 드래그=해당 위치 삽입(사용자 지정 항목).
 - 순서 행: `⋮⋮` 손잡이로 드래그 재정렬, ▲▼ 이동, ✕ 개별 삭제, **오른쪽 값(알약) 클릭 시 수정**.
 - 하단 팔레트 버튼(기도/찬송/말씀/설교/CCM/사용자 지정)을 순서 목록으로 **드래그&드롭**하면 놓은 위치에 삽입, 단순 클릭은 맨 아래 추가.
-  - 추가 시 입력 다이얼로그: 기도→기도자 이름, 찬송→찬송가 장, 말씀→구절, 설교→설교 제목+설교자 (**미입력 시 에러**)
+  - 추가 시 입력 다이얼로그: 기도→기도 종류(설정의 기도 템플릿 폴더 PPT 중 선택)+기도자 이름, 찬송→찬송가 장, 말씀→구절, 설교→설교 제목+설교자 (**미입력 시 에러**)
   - CCM→CCM 폴더 파일 검색(검색칸 + tk.Listbox, `bible_bridge.search_names`: 공백 AND·초성) 후 선택 (**미선택 시 에러**)
   - 팔레트 버튼 6개 폭 합계는 최소 창 폭의 순서 패널(약 570)을 넘지 않게 유지 (현재 78×5 + 108).
   - 사용자 지정→호출할 PPT 이름(필수, 미입력 시 에러) + 오른쪽 문구(**선택**)
@@ -84,12 +84,14 @@ ChurchPPTMaker/
 | kind     | 왼쪽(label)      | 오른쪽(value)  | PPT 호출 규칙 |
 |----------|------------------|----------------|---------------|
 | `custom` | PPT 이름 (예: 예배로 부름) | 커스텀 문구(선택) | 템플릿 폴더에서 **왼쪽 이름**의 PPT. 문구가 있으면 텍스트 입력 |
-| `prayer` | 기도             | 기도자 이름(필수) | 템플릿 폴더의 `기도.pptx` 호출 + 지정 텍스트 박스에 이름 입력 |
+| `prayer` | 기도 종류 = 기도 템플릿 이름 (예: 합심기도) | 기도자 이름(필수) | 설정의 **기도 템플릿 폴더**에서 **왼쪽 이름**의 PPT 호출 + 지정 텍스트 박스에 이름 입력 |
 | `hymn`   | 찬송             | `29장`(필수)   | 찬송가 폴더(하위 포함)에서 **오른쪽 장 번호**의 PPT 검색 |
 | `bible`  | 말씀             | `요3:16`(필수) | Bible2PPT CLI로 구절 PPT 생성 후 병합 |
 | `sermon` | 설교             | 설교 제목(필수) + `options.preacher` 설교자(필수) | 템플릿 폴더의 `설교.pptx` 호출 + 제목→내용1, 설교자→내용2 |
 | `ccm`    | CCM              | CCM 폴더 기준 상대 경로 `봄/곡명.pptx`(필수, 화면엔 `ccm_title`=파일명) | CCM 폴더(하위 포함)의 그 파일. 텍스트 입력 없음 |
 
+- 기도 템플릿 폴더(`item_templates.prayer_dir`)가 미설정/없음/비었으면 기도 추가 시 에러(`App._can_add`).
+  예전 프리셋의 기도 항목(label `기도`)은 그 폴더의 `기도.pptx` 를 찾는다.
 - 템플릿 파일 매칭: 파일명(확장자 제외)이 label과 같거나, 공백 제거 후 같으면 일치. 확장자 `.pptx/.pptm/.ppt`.
 - 찬송가 매칭 우선순위: ① 파일명이 `29`, `029`, `29장`, `029장` ② 파일명의 **첫 번째 숫자**가 29 ③ (숫자 없는 값) 파일명에 값 포함.
 - CCM 매칭(`find_ccm`): ① 저장된 상대 경로 ② 같은 파일명(다른 하위 폴더로 이동) ③ 공백·대소문자 무시 곡명. CCM 폴더 밖 경로(`..`·절대 경로)는 거부.
@@ -149,6 +151,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
   "paths": {"template_dir": "templates", "hymn_dir": "hymns", "ccm_dir": "ccm", "output_dir": "output"},
   "bible2ppt": {"exe_path": "", "bible": "", "template": "", "lines": null, "timeout_sec": 180,
                 "bible_list": []},
+  "item_templates": {"prayer_dir": ""},
   "ppt": {"text_placeholder": "{{내용}}", "text_shape_name": "내용", "open_after_build": true, "start_slideshow": false,
           "merge_mode": "source_formatting"}
 }

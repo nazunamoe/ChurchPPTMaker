@@ -94,12 +94,20 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --version-fil
 
 | 폴더 | 넣을 파일 |
 |---|---|
-| 템플릿 | 순서별 PPT (`기도.pptx`, `예배로 부름.pptx`, `설교.pptx`, `축도.pptx` …) |
+| 템플릿 | 순서별 PPT (`예배로 부름.pptx`, `설교.pptx`, `축도.pptx` …) — 기도 템플릿은 4-2처럼 따로 지정 |
 | 찬송가 | 찬송가 PPT (하위 폴더까지 검색) |
 | CCM | CCM PPT (하위 폴더까지 검색, 파일 이름은 자유) |
 | 출력 | 완성된 예배 PPT가 저장될 곳 |
 
-### 4-2. Bible2PPT 연결 (말씀 기능)
+### 4-2. 기도 템플릿 지정
+기도는 합심기도·중보기도·대표기도처럼 종류가 여러 가지라 **폴더**로 지정합니다.
+1. `합심기도.pptx`, `중보기도.pptx`처럼 기도 종류별 PPT를 한 폴더에 넣습니다.
+2. 상단 **[⚙ 설정]** → **[Bible2PPT · 기도 · 설교]** 쪽의 `기도 템플릿 폴더`에서 **[찾기]**로 그 폴더를 지정합니다.
+3. 기도를 추가할 때 이 폴더의 PPT 중 하나를 **기도 종류**로 고릅니다. 순서 목록 왼쪽에는 고른 이름(예: `합심기도`)이 표시됩니다.
+
+폴더를 지정하지 않으면 기도를 추가할 때 설정하라는 오류가 표시됩니다.
+
+### 4-3. Bible2PPT 연결 (말씀 기능)
 1. **명령줄 실행을 지원하는** [Bible2PPT](https://github.com/nazunamoe/Bible2PPT)를 준비합니다.
    (원본 Bible2PPT 2.0.4 이하처럼 창으로만 쓰는 버전을 지정하면 "명령줄 실행을 지원하지 않는 버전" 안내가 표시됩니다.)
 2. 상단 **[⚙ 설정]** → `Bible2PPT.exe 경로`에서 **[찾기]**로 exe를 지정합니다.
@@ -118,7 +126,6 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --version-fil
 
 ```
 [예배로 부름] → templates\예배로 부름.pptx   (또는 예배로부름.pptx)
-[기도]        → templates\기도.pptx
 [설교]        → templates\설교.pptx
 ```
 
@@ -176,7 +183,7 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --version-fil
 
   | 버튼 | 입력 내용 | 호출되는 PPT |
   |---|---|---|
-  | 기도 | 기도자 이름 (필수) | 템플릿 폴더의 `기도.pptx` + 이름 자동 입력 |
+  | 기도 | 기도 종류 (필수, 기도 템플릿 폴더의 PPT 중 선택), 기도자 이름 (필수) | 고른 기도 템플릿 + 이름 자동 입력 |
   | 찬송 | 찬송가 장 (필수, `29` 또는 `29장`) | 찬송가 폴더에서 검색 |
   | 말씀 | 성경 구절 (필수), 역본 (선택) | Bible2PPT로 생성 |
   | 설교 | 설교 제목 (필수), 설교자 (필수) | 템플릿 폴더의 `설교.pptx` + 제목·설교자 자동 입력 |
@@ -243,6 +250,8 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --version-fil
 
 ## 7. 설정 (⚙ 설정 / config.json)
 
+설정 창은 **[Bible2PPT · 기도 · 설교]** / **[병합 · 텍스트 입력]** 두 쪽으로 나뉘어 있습니다.
+
 | 항목 | 설명 | 기본값 |
 |---|---|---|
 | Bible2PPT.exe 경로 | Bible2PPT 실행 파일 위치 | (없음) |
@@ -250,6 +259,7 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --version-fil
 | 성경 템플릿 | Bible2PPT에 넘길 .pptx 템플릿 | Bible2PPT 기본 템플릿 |
 | 슬라이드당 줄 수 | 0~9 (0 = 제한 없음) | Bible2PPT 설정 |
 | 실행 제한 시간 | Bible2PPT 응답 대기 시간(초) | 180 |
+| 기도 템플릿 폴더 | 기도 종류별 PPT(합심기도·중보기도 …)가 든 폴더 | (없음 — 지정해야 기도 추가 가능) |
 | 병합 방식 | 아래 표 참고 | 원본 서식 유지 |
 | 치환 토큰 | 문구 자리 기본형 (번호를 붙여 `{{내용1}}`~`{{내용3}}`) | `{{내용}}` |
 | 텍스트 상자 이름 | 치환 토큰이 없을 때 쓸 상자 이름 기본형 (`내용1`~`내용3`) | `내용` |
@@ -272,6 +282,8 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --version-fil
 | "템플릿 폴더에 'OOO.pptx' 없음" | 순서 이름과 파일 이름이 같은지 확인 (띄어쓰기는 무시됨) |
 | "CCM 폴더에서 PPT를 찾지 못함" | 선택했던 CCM 파일이 지워졌거나 이름이 바뀜 → 항목을 클릭해 다시 선택 |
 | "찬송가 폴더에서 PPT를 찾지 못함" | 파일 이름에 장 번호가 첫 번째 숫자로 들어 있는지 확인 (5-4 참고) |
+| "기도 템플릿 폴더가 설정되지 않았거나…" | ⚙ 설정에서 기도 템플릿 폴더 지정 (4-2 참고) |
+| "기도 템플릿 폴더에 '기도.pptx' 없음" | 예전 프리셋의 기도 항목 → 항목을 클릭해 기도 종류를 다시 고르기 |
 | "Bible2PPT.exe 경로가 설정되지 않았습니다" | ⚙ 설정에서 exe 경로 지정 |
 | 성경 PPT 생성 실패 (인자 오류) | 구절 형식과 역본 이름 확인, ↻로 역본 목록을 다시 불러오기 |
 | "결과 파일을 저장할 수 없습니다" | 같은 이름의 결과 파일이 PowerPoint에서 열려 있으면 닫고 다시 시도 |

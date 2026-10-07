@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 KIND_CUSTOM = "custom"   # 왼쪽 이름의 PPT 호출 (+선택 문구)
-KIND_PRAYER = "prayer"   # 기도.pptx 호출 + 기도자 이름 입력
+KIND_PRAYER = "prayer"   # 기도 템플릿 폴더에서 label 이름의 PPT 호출 + 기도자 이름 입력
 KIND_HYMN = "hymn"       # 오른쪽 장 번호로 찬송가 폴더에서 검색
 KIND_BIBLE = "bible"     # Bible2PPT 로 구절 PPT 생성
 KIND_SERMON = "sermon"   # 설교.pptx 호출 + 설교 제목({{내용1}})·설교자({{내용2}}) 입력
@@ -98,7 +98,7 @@ def make_item(kind: str, label: str, value: str, options: dict | None = None) ->
     label = label.strip()
     value = value.strip()
     if kind == KIND_PRAYER:
-        label = "기도"
+        label = label or KIND_LABELS[KIND_PRAYER]  # 기도 템플릿 이름 (합심기도, 중보기도 …)
     elif kind == KIND_HYMN:
         label = "찬송"
         value = normalize_hymn(value)

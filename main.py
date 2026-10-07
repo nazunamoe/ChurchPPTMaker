@@ -24,7 +24,8 @@ from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS
                         accent_button, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
-from worship_builder import BuildError, BuildRequest, WorshipBuilder, list_ccm_files, list_ppt_files, output_filename
+from worship_builder import (BuildError, BuildRequest, WorshipBuilder, list_ccm_files, list_ppt_files, output_filename,
+                             prayer_template_names)
 
 APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
@@ -558,10 +559,27 @@ class App(ctk.CTk):
 
     def _dialog(self, kind: str, item: ServiceItem | None = None) -> ServiceItem | None:
         ccm = list_ccm_files(self.cfg.resolve_path("ccm_dir")) if kind == KIND_CCM else None
+        prayer = prayer_template_names(self.cfg) if kind == KIND_PRAYER else None
         return ItemDialog(self, kind, item, template_names=self._template_names(), bible_values=self.bible_values,
-                          default_bible=self.bible_field.get().strip(), ccm_files=ccm).show()
+                          default_bible=self.bible_field.get().strip(), ccm_files=ccm, prayer_names=prayer).show()
+
+    def _can_add(self, kind: str) -> bool:
+        """새 항목을 추가하기 전에 필요한 설정이 됐는지 확인 (안 됐으면 에러 창)."""
+        if kind == KIND_PRAYER:
+            names = prayer_template_names(self.cfg)
+            if names is None:
+                messagebox.showerror("기도 템플릿 설정 필요", "기도 템플릿 폴더가 설정되지 않았거나 찾을 수 없습니다.\n"
+                                     "상단 ⚙ 설정 → 기도 · 설교 템플릿에서 기도 템플릿 폴더를 지정해 주세요.", parent=self)
+                return False
+            if not names:
+                messagebox.showerror("기도 템플릿 없음", "기도 템플릿 폴더에 PPT 파일이 없습니다.\n"
+                                     "합심기도.pptx, 중보기도.pptx 처럼 기도 종류별 PPT 를 넣어 주세요.", parent=self)
+                return False
+        return True
 
     def _prompt_new(self, kind: str, idx: int):
+        if not self._can_add(kind):
+            return
         item = self._dialog(kind)
         if item:
             self._insert(item, idx)
