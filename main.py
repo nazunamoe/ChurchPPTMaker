@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import sys
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -23,6 +25,17 @@ from worship_builder import BuildError, BuildRequest, WorshipBuilder, list_ppt_f
 APP_TITLE = "예배 순서 PPT 제작 프로그램 v1.0"
 DATE_FMT = "%Y-%m-%d"
 MODES = {"라이트": "Light", "다크": "Dark", "시스템": "System"}
+# PyInstaller onefile 은 번들 파일을 sys._MEIPASS 에 풀어 둠
+ICON_PATH = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets" / "app.ico"
+
+
+def _set_app_user_model_id():
+    """작업 표시줄이 python.exe 아이콘 대신 창 아이콘을 쓰도록 별도 앱으로 등록 (Tk 생성 전 호출)."""
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ChurchPPTMaker.App")
+    except (AttributeError, OSError):
+        pass
 
 
 class App(ctk.CTk):
@@ -33,6 +46,8 @@ class App(ctk.CTk):
         ctk.set_default_color_theme("blue")
         super().__init__(fg_color=BG)
         self.title(APP_TITLE)
+        if ICON_PATH.is_file():
+            self.iconbitmap(default=str(ICON_PATH))  # CTk 기본 아이콘 대신 (default= 는 다이얼로그 등에도 적용)
         self._fit_to_screen(1220, 820)
 
         self.items: list[ServiceItem] = []
@@ -725,4 +740,5 @@ class App(ctk.CTk):
 
 
 if __name__ == "__main__":
+    _set_app_user_model_id()
     App().mainloop()

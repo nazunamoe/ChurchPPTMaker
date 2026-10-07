@@ -258,6 +258,7 @@ ChurchPPTMaker/
 ├─ requirements.txt    필요한 Python 패키지
 ├─ requirements-build.txt  빌드용 패키지 (requirements.txt + PyInstaller)
 ├─ build.bat / build.ps1   exe 빌드 스크립트
+├─ assets/app.ico         프로그램 아이콘
 └─ CLAUDE.md           개발용 상세 문서 (구조·규칙·개발 히스토리)
 ```
 

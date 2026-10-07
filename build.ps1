@@ -28,7 +28,8 @@ if ($Clean) {
 
 Write-Host '[3/3] PyInstaller 빌드' -ForegroundColor Cyan
 & $venvPy -m PyInstaller --noconfirm --clean --onefile --windowed `
-    --name ChurchPPTMaker --collect-data customtkinter main.py
+    --name ChurchPPTMaker --icon assets/app.ico --add-data "assets/app.ico;assets" `
+    --collect-data customtkinter main.py
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller 빌드 실패' }
 
 $exe = Join-Path $PSScriptRoot 'dist\ChurchPPTMaker.exe'
