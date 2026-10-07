@@ -31,6 +31,7 @@ DEFAULT_CONFIG: dict = {
         "template_dir": "templates",
         "hymn_dir": "hymns",
         "ccm_dir": "ccm",
+        "prayer_dir": "prayers",  # 기도 템플릿 폴더 (합심기도.pptx, 중보기도.pptx … — 기도 추가 시 하나 선택)
         "output_dir": "output",
     },
     "bible2ppt": {
@@ -42,7 +43,6 @@ DEFAULT_CONFIG: dict = {
         "bible_list": [],  # --list-bibles 결과 캐시 (exe 지정·↻ 시 갱신)
     },
     "item_templates": {
-        "prayer_dir": "",  # 기도 템플릿 폴더 (합심기도.pptx, 중보기도.pptx … — 기도 추가 시 하나 선택)
         "sermon_file": "",  # 설교 템플릿 PPT 파일 (하나)
     },
     "ppt": {
@@ -124,9 +124,15 @@ def _read_json(path: Path):
 class ConfigManager:
     def __init__(self, path: Path = CONFIG_PATH):
         self.path = path
-        self.data = _deep_merge(DEFAULT_CONFIG, _read_json(path) or {})
+        raw = _read_json(path) or {}
+        self.data = _deep_merge(DEFAULT_CONFIG, raw)
+        # 1.0.3 초기 형식: 기도 폴더가 ⚙ 설정(item_templates.prayer_dir)에 있었음 → 왼쪽 [폴더](paths.prayer_dir)로 옮김
+        old = (raw.get("item_templates") or {}).get("prayer_dir") if isinstance(raw.get("item_templates"), dict) else None
+        if isinstance(old, str) and old.strip() and "prayer_dir" not in (raw.get("paths") or {}):
+            self.data["paths"]["prayer_dir"] = old.strip()
+        self.data["item_templates"].pop("prayer_dir", None)
         self.save()
-        for key in ("template_dir", "hymn_dir", "ccm_dir", "output_dir"):
+        for key in ("template_dir", "hymn_dir", "ccm_dir", "prayer_dir", "output_dir"):
             try:
                 self.resolve_path(key).mkdir(parents=True, exist_ok=True)
             except OSError:

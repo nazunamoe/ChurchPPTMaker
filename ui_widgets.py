@@ -14,7 +14,7 @@ import customtkinter as ctk
 from bible_bridge import Bible2PPT, bible_sources, filter_bibles, search_names, short_source, split_bible
 from models import (KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, MAX_FILL,
                     ServiceItem, ccm_title, make_item, numbered_token, validate_item)
-from worship_builder import PPT_EXTS, list_ppt_files
+from worship_builder import PPT_EXTS
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
 FONT_FAMILY = "Malgun Gothic"
@@ -490,7 +490,7 @@ class ItemDialog(_Modal):
             row += 1
 
         if kind == KIND_PRAYER:
-            ctk.CTkLabel(body, text="설정의 기도 템플릿 폴더에서 고른 PPT 의 {{내용1}} 자리에 기도자 이름이 들어갑니다.",
+            ctk.CTkLabel(body, text="왼쪽 [폴더]의 기도 폴더에서 고른 PPT 의 {{내용1}} 자리에 기도자 이름이 들어갑니다.",
                          font=font(11), text_color=TEXT2).grid(row=row, column=0, columnspan=2, padx=16, sticky="w")
             row += 1
         if kind == KIND_SERMON:
@@ -638,7 +638,7 @@ class SettingsDialog(_Modal):
     저장 시 불러온 목록은 config.bible2ppt.bible_list 에 캐시된다.
     항목이 많아 한 화면에 두면 최소 창 높이를 넘으므로 두 쪽으로 나눈다. 두 쪽은 같은 grid 칸에 겹쳐 두고
     선택한 쪽만 위로 올린다 → 칸 크기가 큰 쪽에 맞춰져서 쪽을 바꿔도 창 크기가 흔들리지 않음."""
-    PAGES = ("Bible2PPT · 기도 · 설교", "병합 · 텍스트 입력")
+    PAGES = ("Bible2PPT · 설교", "병합 · 텍스트 입력")
 
     def __init__(self, master, cfg):
         super().__init__(master, "설정")
@@ -706,15 +706,7 @@ class SettingsDialog(_Modal):
         self.timeout = entry(str(b.get("timeout_sec", 180)), width=80)
         row("실행 제한 시간(초)", self.timeout)
 
-        section("기도 · 설교 템플릿")
-        self.prayer_dir = entry(t.get("prayer_dir"))
-        row("기도 템플릿 폴더", self.prayer_dir, self._browse_prayer_dir)
-        self.prayer_dir.bind("<KeyRelease>", lambda e: self._show_prayer_hint(), add="+")
-        self.prayer_hint = ctk.CTkLabel(body, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left",
-                                        wraplength=380)
-        self.prayer_hint.grid(row=r, column=1, columnspan=2, sticky="w", pady=(0, 4))
-        r += 1
-        self._show_prayer_hint()
+        section("설교 템플릿")
         self.sermon_file = entry(t.get("sermon_file"))
         row("설교 템플릿 (.pptx)", self.sermon_file,
             lambda: self._browse(self.sermon_file, [("PowerPoint", "*.pptx *.pptm *.ppt")]))
@@ -777,31 +769,6 @@ class SettingsDialog(_Modal):
     def _show_page(self, name: str):
         self.page_seg.set(name)
         self._pages[name].tkraise()
-
-    def _browse_prayer_dir(self):
-        cur = self.cfg.resolve_file(self.prayer_dir.get().strip())
-        path = filedialog.askdirectory(parent=self, mustexist=True,
-                                       initialdir=str(cur) if cur and cur.is_dir() else None)
-        if path:
-            self.prayer_dir.delete(0, "end")
-            self.prayer_dir.insert(0, path)
-            self._show_prayer_hint()
-
-    def _show_prayer_hint(self):
-        raw = self.prayer_dir.get().strip()
-        folder = self.cfg.resolve_file(raw)
-        error = False
-        if not raw:
-            text = "합심기도.pptx, 중보기도.pptx 처럼 기도 종류별 PPT 를 넣은 폴더. 기도를 추가할 때 이 중 하나를 고릅니다."
-        elif not folder.is_dir():
-            text, error = "⚠ 폴더를 찾을 수 없습니다.", True
-        else:
-            names = [q.stem for q in list_ppt_files(folder)]
-            if names:
-                text = f"기도 템플릿 {len(names)}개: " + ", ".join(names[:6]) + (" …" if len(names) > 6 else "")
-            else:
-                text, error = "⚠ 이 폴더에 PPT 파일이 없습니다.", True
-        self.prayer_hint.configure(text=text, text_color=DANGER if error else TEXT2)
 
     def _browse_exe(self):
         if self._browse(self.exe, [("Bible2PPT", "*.exe")]):
@@ -881,11 +848,6 @@ class SettingsDialog(_Modal):
             self._show_page(self.PAGES[0])
             messagebox.showerror("입력 오류", "Bible2PPT 경로는 .exe 실행 파일이어야 합니다.", parent=self)
             return
-        prayer_raw = self.prayer_dir.get().strip()
-        if prayer_raw and not self.cfg.resolve_file(prayer_raw).is_dir():
-            self._show_page(self.PAGES[0])
-            messagebox.showerror("입력 오류", f"기도 템플릿 폴더를 찾을 수 없습니다:\n{prayer_raw}", parent=self)
-            return
         sermon_raw = self.sermon_file.get().strip()
         if sermon_raw:
             sp = self.cfg.resolve_file(sermon_raw)
@@ -899,7 +861,7 @@ class SettingsDialog(_Modal):
                  lines=None if lines == "프로그램 설정" else int(lines), timeout_sec=timeout,
                  # 현재 exe 로 불러온 목록만 캐시 (exe 가 바뀌었는데 아직 못 불러왔으면 비움 → 메인에서 다시 불러옴)
                  bible_list=self.bible_values if self._loaded_for is not None and self._loaded_for == self._exe() else [])
-        self.cfg.get("item_templates").update(prayer_dir=prayer_raw, sermon_file=sermon_raw)
+        self.cfg.get("item_templates").update(sermon_file=sermon_raw)
         p = self.cfg.get("ppt")
         p.update(text_placeholder=self.placeholder.get().strip(), text_shape_name=self.shape_name.get().strip(),
                  merge_mode=MERGE_MODES[self.merge_mode.get()])

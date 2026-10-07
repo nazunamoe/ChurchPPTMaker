@@ -339,37 +339,33 @@ class App(ctk.CTk):
         ctk.CTkLabel(fc, text="폴더", font=font(15, "bold"), text_color=TEXT).grid(
             row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(10, 4))
         self.path_vars: dict[str, tk.StringVar] = {}
-        folders = [("template_dir", "템플릿"), ("hymn_dir", "찬송가"), ("ccm_dir", "CCM"), ("output_dir", "출력")]
+        # 템플릿 폴더는 그 폴더의 파일을 보여 주는 [템플릿 파일] 카드 맨 위에 둔다
+        folders = [("prayer_dir", "기도"), ("hymn_dir", "찬송가"), ("ccm_dir", "CCM"), ("output_dir", "출력")]
         for r, (key, name) in enumerate(folders, 1):
-            ctk.CTkLabel(fc, text=name, font=font(12), text_color=TEXT2, width=44, anchor="w").grid(
-                row=r, column=0, padx=(14, 4), pady=3, sticky="w")
-            var = tk.StringVar(value=str(self.cfg.resolve_path(key)))
-            self.path_vars[key] = var
-            ctk.CTkEntry(fc, textvariable=var, state="readonly", height=30, font=font(11),
-                         text_color=TEXT2).grid(row=r, column=1, sticky="ew", pady=3)
-            b1 = secondary_button(fc, "📁", lambda k=key: self._choose_folder(k), width=32)
-            b1.grid(row=r, column=2, padx=(4, 0), pady=3)
-            b2 = secondary_button(fc, "↗", lambda k=key: self._open_folder(k), width=32)
-            b2.grid(row=r, column=3, padx=(4, 14), pady=3)
+            self._folder_row(fc, r, key, name)
         ctk.CTkFrame(fc, width=1, height=6, fg_color="transparent").grid(row=len(folders) + 1, column=0)
 
         # 템플릿 파일 목록
         tc = card(left)
         tc.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
         tc.grid_columnconfigure(0, weight=1)
-        tc.grid_rowconfigure(2, weight=1)
+        tc.grid_rowconfigure(3, weight=1)
         head = ctk.CTkFrame(tc, fg_color="transparent")
         head.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 4))
         ctk.CTkLabel(head, text="템플릿 파일", font=font(15, "bold"), text_color=TEXT).pack(side="left")
         self.file_count = ctk.CTkLabel(head, text="", font=font(12), text_color=TEXT2)
         self.file_count.pack(side="left", padx=8)
         secondary_button(head, "↻", self._refresh_files, width=32).pack(side="right")
+        frow = ctk.CTkFrame(tc, fg_color="transparent")
+        frow.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        frow.grid_columnconfigure(1, weight=1)
+        self._folder_row(frow, 0, "template_dir", "폴더")
         self.file_search = ctk.CTkEntry(tc, height=30, font=font(12), placeholder_text="🔍  파일 이름 검색")
-        self.file_search.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 6))
+        self.file_search.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 6))
         self.file_search.bind("<KeyRelease>", lambda e: self._render_files())
         # 파일마다 CTkButton 을 만들면 파일 수만큼 위젯(HWND)이 늘어 창 크기 조절이 느려진다 → tk.Listbox 하나로 그림
         box = ctk.CTkFrame(tc, fg_color=SUBTLE, corner_radius=8)
-        box.grid(row=2, column=0, sticky="nsew", padx=14)
+        box.grid(row=3, column=0, sticky="nsew", padx=14)
         self.file_listbox = tk.Listbox(box, height=MIN_FILE_ROWS, activestyle="none", borderwidth=0, highlightthickness=0,
                                        exportselection=False, selectmode="browse", font=tk_font(self, FILE_FONT_SIZE),
                                        cursor="hand2")
@@ -385,7 +381,7 @@ class App(ctk.CTk):
         self.file_listbox.bind("<Double-Button-1>", self._on_file_double_click)
         self._style_file_listbox()
         foot = ctk.CTkFrame(tc, fg_color="transparent")
-        foot.grid(row=3, column=0, sticky="ew", padx=14, pady=(6, 12))
+        foot.grid(row=4, column=0, sticky="ew", padx=14, pady=(6, 12))
         ctk.CTkLabel(foot, text="끌어다 놓기 · 더블클릭으로 추가", font=font(11), text_color=TEXT2).pack(side="left")
         secondary_button(foot, "순서에 추가", self._add_selected_file, width=90).pack(side="right")
 
@@ -407,6 +403,19 @@ class App(ctk.CTk):
         accent_button(brow, "순서에 추가", self._add_bible_from_form, width=96).pack(side="left")
         self.bible_status = ctk.CTkLabel(bc, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left")
         self.bible_status.grid(row=3, column=0, columnspan=2, sticky="w", padx=14, pady=(4, 10))
+
+    def _folder_row(self, parent, r: int, key: str, name: str):
+        """[이름] [경로(읽기 전용)] [📁 지정] [↗ 열기] 한 줄 (parent 의 grid r 행, 1열이 늘어남)."""
+        ctk.CTkLabel(parent, text=name, font=font(12), text_color=TEXT2, width=44, anchor="w").grid(
+            row=r, column=0, padx=(14, 4), pady=3, sticky="w")
+        var = tk.StringVar(value=str(self.cfg.resolve_path(key)))
+        self.path_vars[key] = var
+        ctk.CTkEntry(parent, textvariable=var, state="readonly", height=30, font=font(11),
+                     text_color=TEXT2).grid(row=r, column=1, sticky="ew", pady=3)
+        secondary_button(parent, "📁", lambda: self._choose_folder(key), width=32).grid(
+            row=r, column=2, padx=(4, 0), pady=3)
+        secondary_button(parent, "↗", lambda: self._open_folder(key), width=32).grid(
+            row=r, column=3, padx=(4, 14), pady=3)
 
     # ---------------------------------------------------------------- 우측: 순서 패널 (CLAUDE.md §4 초안)
     def _build_order_panel(self, parent):
@@ -626,12 +635,13 @@ class App(ctk.CTk):
         if kind == KIND_PRAYER:
             names = prayer_template_names(self.cfg)
             if names is None:
-                messagebox.showerror("기도 템플릿 설정 필요", "기도 템플릿 폴더가 설정되지 않았거나 찾을 수 없습니다.\n"
-                                     "상단 ⚙ 설정 → 기도 · 설교 템플릿에서 기도 템플릿 폴더를 지정해 주세요.", parent=self)
+                messagebox.showerror("기도 폴더 없음", "기도 템플릿 폴더를 찾을 수 없습니다.\n"
+                                     "왼쪽 [폴더]의 '기도' 줄에서 📁 로 폴더를 지정해 주세요.", parent=self)
                 return False
             if not names:
-                messagebox.showerror("기도 템플릿 없음", "기도 템플릿 폴더에 PPT 파일이 없습니다.\n"
-                                     "합심기도.pptx, 중보기도.pptx 처럼 기도 종류별 PPT 를 넣어 주세요.", parent=self)
+                messagebox.showerror("기도 템플릿 없음", "기도 폴더에 PPT 파일이 없습니다.\n"
+                                     "합심기도.pptx, 중보기도.pptx 처럼 기도 종류별 PPT 를 넣거나\n"
+                                     "왼쪽 [폴더]의 '기도' 줄에서 📁 로 다른 폴더를 지정해 주세요.", parent=self)
                 return False
         if kind == KIND_BIBLE:
             try:
@@ -644,7 +654,7 @@ class App(ctk.CTk):
                 return False
         if kind == KIND_SERMON and sermon_template(self.cfg) is None:
             messagebox.showerror("설교 템플릿 설정 필요", "설교 템플릿 PPT 가 설정되지 않았거나 찾을 수 없습니다.\n"
-                                 "상단 ⚙ 설정 → 기도 · 설교 템플릿에서 설교 템플릿 PPT 를 지정해 주세요.", parent=self)
+                                 "상단 ⚙ 설정 → 설교 템플릿에서 설교 템플릿 PPT 를 지정해 주세요.", parent=self)
             return False
         return True
 
