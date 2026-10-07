@@ -298,6 +298,8 @@ class App(ctk.CTk):
         bar = card(self._content)
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
         # 줄 틀은 카드 색으로 칠해지므로 둥근 테두리를 덮지 않도록 안쪽으로 들여 배치
+        # 입력칸 너비는 최소 창 너비(MIN_WIDTH)에서 두 줄이 오른쪽 여백 8 까지 꽉 차도록 맞춘 값 (두 줄 오른쪽 끝도 일치).
+        # 줄에 요소를 더하거나 너비를 바꾸면 최소 너비에서 넘치지 않는지 함께 확인할 것.
         line1 = ctk.CTkFrame(bar, fg_color="transparent")
         line1.pack(fill="x", padx=10, pady=(8, 0))
         line2 = ctk.CTkFrame(bar, fg_color="transparent")
@@ -311,7 +313,7 @@ class App(ctk.CTk):
             self._schedule_save()
 
         label(line1, "교회 이름").pack(side="left", padx=(8, 8), pady=(6, 5))
-        self.church_entry = ctk.CTkEntry(line1, width=230, height=34, font=font(13), placeholder_text="예: 사랑의교회")
+        self.church_entry = ctk.CTkEntry(line1, width=255, height=34, font=font(13), placeholder_text="예: 사랑의교회")
         self.church_entry.insert(0, self.cfg.get("church_name") or "")
         self.church_entry.pack(side="left")
         self.church_entry.bind("<KeyRelease>", on_change)
@@ -327,7 +329,7 @@ class App(ctk.CTk):
         secondary_button(line1, "금일 지정", self._set_today, width=80).pack(side="left")
 
         label(line1, "예배 종류").pack(side="left", padx=(28, 8))
-        self.worship_entry = ctk.CTkEntry(line1, width=170, height=34, font=font(13), placeholder_text="예: 주일오전예배")
+        self.worship_entry = ctk.CTkEntry(line1, width=192, height=34, font=font(13), placeholder_text="예: 주일오전예배")
         self.worship_entry.insert(0, self.cfg.get("worship_type") or "")
         self.worship_entry.pack(side="left", padx=(0, 8))
         self.worship_entry.bind("<KeyRelease>", on_change)
@@ -340,7 +342,7 @@ class App(ctk.CTk):
         label(line2, "출력 폴더").grid(row=0, column=0, padx=(8, 8), pady=(5, 2))
         var = tk.StringVar(value=str(self.cfg.resolve_path("output_dir")))
         self.path_vars["output_dir"] = var
-        ctk.CTkEntry(line2, textvariable=var, state="readonly", width=220, height=34, font=font(12),
+        ctk.CTkEntry(line2, textvariable=var, state="readonly", width=245, height=34, font=font(12),
                      text_color=TEXT2).grid(row=0, column=1)
         for col, (text, cmd) in enumerate((("📁", lambda: self._choose_folder("output_dir")),
                                            ("↗", lambda: self._open_folder("output_dir"))), 2):
@@ -349,7 +351,7 @@ class App(ctk.CTk):
             b.grid(row=0, column=col, padx=(4, 0))
 
         label(line2, "파일 이름").grid(row=0, column=4, padx=(28, 8))
-        self.format_entry = ctk.CTkEntry(line2, width=280, height=34, font=font(13),
+        self.format_entry = ctk.CTkEntry(line2, width=307, height=34, font=font(13),
                                          placeholder_text=DEFAULT_FILENAME_FORMAT)
         self.format_entry.insert(0, self.cfg.get("filename_format") or DEFAULT_FILENAME_FORMAT)
         self.format_entry.grid(row=0, column=5)
