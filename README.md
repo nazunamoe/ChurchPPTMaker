@@ -2,8 +2,6 @@
 
 예배 순서를 화면에서 끌어다 놓아 구성하면, 순서마다 맞는 PowerPoint 파일을 찾아 **한 개의 예배 PPT로 자동 병합**해 주는 Windows 프로그램입니다.
 
-![프로그램 화면](스크린샷.png)
-
 - 기도·찬송·말씀·사용자 지정 순서를 **드래그&드롭**으로 배치
 - 찬송가 장 번호로 찬송가 PPT를 **폴더에서 자동 검색**
 - 성경 구절(`요3:16`, `롬1-3` 등)을 [Bible2PPT](https://github.com/nazunamoe/Bible2PPT)로 **자동 생성**
@@ -140,7 +138,7 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --collect-dat
 ## 6. 사용 방법
 
 화면은 **상단(교회 이름·날짜·예배 종류) / 왼쪽(폴더·템플릿 파일·성경 구절) / 오른쪽(순서) / 하단(생성 버튼)**으로 구성됩니다.
-오른쪽 "순서" 패널은 [UI 초안](초안.png)의 배치를 그대로 따릅니다.
+오른쪽 "순서" 패널은 최초 UI 초안의 배치를 그대로 따릅니다.
 
 ### 6-1. 기본 정보 입력 (상단)
 - **교회 이름**: 한 번 입력하면 저장되어 다음 실행 때도 유지됩니다.
@@ -256,8 +254,7 @@ ChurchPPTMaker/
 ├─ requirements.txt    필요한 Python 패키지
 ├─ requirements-build.txt  빌드용 패키지 (requirements.txt + PyInstaller)
 ├─ build.bat / build.ps1   exe 빌드 스크립트
-├─ CLAUDE.md           개발용 상세 문서 (구조·규칙·개발 히스토리)
-└─ 초안.png            UI 초안
+└─ CLAUDE.md           개발용 상세 문서 (구조·규칙·개발 히스토리)
 ```
 
 개발 규칙과 내부 구조는 [CLAUDE.md](CLAUDE.md)를 참고하세요.

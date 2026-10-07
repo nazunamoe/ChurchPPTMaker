@@ -1,6 +1,6 @@
 """예배 순서 PPT 제작 프로그램 v1.0 — 메인 윈도우.
 
-레이아웃은 초안.png 기준 (CLAUDE.md §4 참고).
+레이아웃은 UI 초안 기준 (CLAUDE.md §4 참고).
 """
 from __future__ import annotations
 
@@ -188,7 +188,7 @@ class App(ctk.CTk):
         self.bible_status = ctk.CTkLabel(bc, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left")
         self.bible_status.grid(row=3, column=0, columnspan=2, sticky="w", padx=14, pady=(4, 10))
 
-    # ---------------------------------------------------------------- 우측: 순서 패널 (초안.png)
+    # ---------------------------------------------------------------- 우측: 순서 패널 (CLAUDE.md §4 초안)
     def _build_order_panel(self, parent):
         oc = card(parent)
         oc.grid(row=0, column=1, sticky="nsew")
