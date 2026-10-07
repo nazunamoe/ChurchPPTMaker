@@ -39,6 +39,8 @@ SLIDE_SIZE_LABELS = {"원본": "original", "16:9": "16:9", "4:3": "4:3"}  # 화�
 MIN_FILE_ROWS = 4  # 최소 창 크기에서도 템플릿 파일 목록이 이만큼은 보이도록
 FILE_FONT_SIZE = 13.2  # 템플릿 파일 목록 글자 크기 (기본 12 의 110% — 항목 줄 높이도 글자 크기를 따라 커짐)
 RESIZE_SETTLE_MS = 150  # 창 크기 조절이 이 시간 동안 멈추면 그때 내용 배치를 새 크기로 맞춤
+MIN_WIDTH = 1000  # 최소 창 너비 (논리 단위). 처음 열 때도 이 너비 × 최소 높이로 연다
+START_REVEAL_MS = 2000  # 시작 크기 계산이 늦어져도 이 시간 뒤에는 창을 보이게 함
 # PyInstaller onefile 은 번들 파일을 sys._MEIPASS 에 풀어 둠
 ICON_PATH = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets" / "app.ico"
 
@@ -143,7 +145,15 @@ class App(ctk.CTk):
         self.title(APP_TITLE)
         if ICON_PATH.is_file():
             self.iconbitmap(default=str(ICON_PATH))  # CTk 기본 아이콘 대신 (default= 는 다이얼로그 등에도 적용)
-        self._fit_to_screen(1220, 820)
+        # 처음에는 최소 크기로 연다. 최소 높이는 첫 배치 뒤에야 알 수 있으므로(_apply_min_size) 그때까지 창을 투명하게 두어
+        # 큰 창이 보였다가 줄어드는 깜빡임을 없앤다. 혹시 크기 계산이 안 되더라도 START_REVEAL_MS 뒤에는 반드시 보이게 함.
+        self._revealed = False
+        try:
+            self.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
+        self.after(START_REVEAL_MS, self._reveal)
+        self._fit_to_screen(MIN_WIDTH, 820)
         _disable_full_redraw_on_resize(self)
 
         self.items: list[ServiceItem] = []
@@ -242,7 +252,7 @@ class App(ctk.CTk):
         x = left + max((right - left - int(w * scale)) // 2, 0)
         y = top + max((bottom - top - int(h * scale)) // 3, 0)
         self.geometry(f"{w}x{h}+{x}+{y}")
-        self.minsize(min(1000, w), min(660, h))
+        self.minsize(min(MIN_WIDTH, w), min(660, h))
 
     def _apply_min_size(self):
         """최소 높이를 '템플릿 목록이 MIN_FILE_ROWS 줄 보이는 높이'로 맞춘다.
@@ -252,11 +262,25 @@ class App(ctk.CTk):
         self.update_idletasks()
         lb = self.file_listbox
         if not lb.winfo_ismapped():
+            self._reveal()
             return
         scale = ctk.ScalingTracker.get_window_scaling(self)
         need = math.ceil((self.winfo_height() - lb.winfo_height() + lb.winfo_reqheight()) / scale)  # 픽셀 → 논리 단위
         screen = self._available_size()[1]  # _fit_to_screen 과 같은 기준 (논리 단위)
-        self.minsize(round(self.wm_minsize()[0] / scale), max(660, min(need, screen)))
+        min_w, min_h = round(self.wm_minsize()[0] / scale), max(660, min(need, screen))
+        if not self._revealed:  # 처음 열 때: 최소 크기로 맞추고 화면 가운데에 둔 뒤 보이기
+            self._fit_to_screen(min_w, min_h)
+        self.minsize(min_w, min_h)
+        self.after(50, self._reveal)
+
+    def _reveal(self):
+        if self._revealed:
+            return
+        self._revealed = True
+        try:
+            self.attributes("-alpha", 1.0)
+        except tk.TclError:
+            pass
 
     # ================================================================ 상단
     def _build_header(self):
