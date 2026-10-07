@@ -29,6 +29,7 @@ DEFAULT_CONFIG: dict = {
     "paths": {
         "template_dir": "templates",
         "hymn_dir": "hymns",
+        "ccm_dir": "ccm",
         "output_dir": "output",
     },
     "bible2ppt": {
@@ -120,7 +121,7 @@ class ConfigManager:
         self.path = path
         self.data = _deep_merge(DEFAULT_CONFIG, _read_json(path) or {})
         self.save()
-        for key in ("template_dir", "hymn_dir", "output_dir"):
+        for key in ("template_dir", "hymn_dir", "ccm_dir", "output_dir"):
             try:
                 self.resolve_path(key).mkdir(parents=True, exist_ok=True)
             except OSError:

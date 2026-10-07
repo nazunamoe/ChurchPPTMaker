@@ -141,6 +141,24 @@ def filter_bibles(entries: list[str], query: str = "", source: str | None = None
     return [e for _, _, e in ranked]
 
 
+def search_names(names: list[str], query: str = "") -> list[int]:
+    """파일 이름 등 일반 문자열 검색 → 일치하는 항목의 인덱스 (filter_bibles 와 같은 규칙: 공백 구분 AND,
+    대소문자·공백 무시, 초성 가능). 정렬: 검색어로 시작 → 그 외, 같은 순위는 원래 순서."""
+    tokens = [_norm(t) for t in query.split() if t.strip()]
+    if not tokens:
+        return list(range(len(names)))
+    ranked = []
+    for idx, name in enumerate(names):
+        nm = _norm(name)
+        if not all(_contains(nm, t) for t in tokens):
+            continue
+        first = tokens[0]
+        starts = len(nm) >= len(first) and all(_char_eq(first[j], nm[j]) for j in range(len(first)))
+        ranked.append((0 if starts else 1, idx, name))
+    ranked.sort()
+    return [i for _, i, _ in ranked]
+
+
 def bible_arg(entry: str) -> str:
     """역본 표시 문자열에서 -b 에 넘길 값 추출.
     '개역개정 · 갓피아 [12]' → '12', 'ID\\t소스\\t이름' 원본 줄 → ID, 그 외에는 이름으로 간주."""

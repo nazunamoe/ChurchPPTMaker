@@ -11,9 +11,9 @@ from typing import Any, Callable
 
 import customtkinter as ctk
 
-from bible_bridge import Bible2PPT, bible_sources, filter_bibles, short_source, split_bible
-from models import (KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem,
-                    make_item, numbered_token, validate_item)
+from bible_bridge import Bible2PPT, bible_sources, filter_bibles, search_names, short_source, split_bible
+from models import (KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, MAX_FILL,
+                    ServiceItem, ccm_title, make_item, numbered_token, validate_item)
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
 FONT_FAMILY = "Malgun Gothic"
@@ -34,6 +34,7 @@ KIND_COLORS = {
     KIND_HYMN: ("#8764B8", "#B69CE0"),
     KIND_BIBLE: ("#C35A00", "#F7A35C"),
     KIND_SERMON: ("#B4235A", "#F28AB0"),
+    KIND_CCM: ("#00787A", "#4CC9C0"),
     KIND_CUSTOM: ("#0067C0", "#60CDFF"),
 }
 
@@ -304,7 +305,7 @@ class BiblePicker(_Modal):
         box = ctk.CTkFrame(body, fg_color=SUBTLE, corner_radius=8, border_width=1, border_color=BORDER)
         box.pack(fill="both", expand=True, padx=14)
         self.listbox = tk.Listbox(box, height=12, width=60, activestyle="none", borderwidth=0, highlightthickness=0,
-                                  exportselection=False, font=(FONT_FAMILY, 11), bg=_pick(SUBTLE), fg=_pick(TEXT),
+                                  exportselection=False, font=tk_font(self, 15), bg=_pick(SUBTLE), fg=_pick(TEXT),
                                   selectbackground=_pick(ACCENT), selectforeground="#FFFFFF")
         sb = ctk.CTkScrollbar(box, command=self.listbox.yview)
         self.listbox.configure(yscrollcommand=sb.set)
@@ -427,11 +428,12 @@ class BibleField(ctk.CTkFrame):
 
 # ---------------------------------------------------------------- 항목 입력 다이얼로그
 class ItemDialog(_Modal):
-    """기도/찬송/말씀/설교/사용자 지정 입력. 필수값 미입력 시 에러 창."""
+    """기도/찬송/말씀/설교/CCM/사용자 지정 입력. 필수값 미입력 시 에러 창."""
+    CCM_ROWS = 10
 
     def __init__(self, master, kind: str, item: ServiceItem | None = None,
                  template_names: list[str] | None = None, bible_values: list[str] | None = None,
-                 default_bible: str = ""):
+                 default_bible: str = "", ccm_files: list[str] | None = None):
         editing = item is not None
         super().__init__(master, f"{KIND_LABELS[kind]} {'수정' if editing else '추가'}")
         self.kind = kind
@@ -445,7 +447,11 @@ class ItemDialog(_Modal):
         self.label_widget = None
         self.bible_widget = None
         self.preacher_entry = None
+        self.ccm_listbox = None
         row = 1
+        if kind == KIND_CCM:
+            self._build_ccm(body, row, ccm_files or [], item.value if item else "")
+            row += 3
         if kind == KIND_CUSTOM:
             self._lbl(body, row, "호출할 PPT 이름 *")
             self.label_widget = ctk.CTkComboBox(body, width=260, values=template_names or [], font=font(13),
@@ -460,13 +466,14 @@ class ItemDialog(_Modal):
             KIND_BIBLE: ("성경 구절 *", "예: 창1:1-5, 롬1-3"),
             KIND_SERMON: ("설교 제목 *", "예: 믿음의 사람"),
             KIND_CUSTOM: ("오른쪽 문구 (선택)", "예: 인도자"),
-        }[kind]
-        self._lbl(body, row, prompt)
-        self.value_entry = ctk.CTkEntry(body, width=260, placeholder_text=hint, font=font(13))
-        if item and item.value:
-            self.value_entry.insert(0, item.value)
-        self.value_entry.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
-        row += 1
+        }.get(kind, (None, None))
+        if prompt:
+            self._lbl(body, row, prompt)
+            self.value_entry = ctk.CTkEntry(body, width=260, placeholder_text=hint, font=font(13))
+            if item and item.value:
+                self.value_entry.insert(0, item.value)
+            self.value_entry.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
+            row += 1
 
         if kind == KIND_SERMON:
             self._lbl(body, row, "설교자 *")
@@ -502,6 +509,83 @@ class ItemDialog(_Modal):
     def on_shown(self):
         (self.label_widget if self.label_widget is not None else self.value_entry).focus_set()
 
+    # ---- CCM: 파일명이 정형화돼 있지 않으므로 CCM 폴더의 파일을 이름으로 검색해 고른다 (항목 값 = 상대 경로)
+    def _build_ccm(self, body, row: int, files: list[str], current: str):
+        self._ccm_files = list(files)
+        self._ccm_titles = [ccm_title(f) + (f"   ({f.rsplit('/', 1)[0]})" if "/" in f else "") for f in files]
+        self._ccm_shown: list[int] = []
+        self._ccm_job = None
+        self._lbl(body, row, "CCM 파일 *")
+        self.value_entry = ctk.CTkEntry(body, width=400, placeholder_text="🔍  파일 이름 검색 (초성 가능)", font=font(13))
+        self.value_entry.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
+        box = ctk.CTkFrame(body, fg_color=SUBTLE, corner_radius=8, border_width=1, border_color=BORDER)
+        box.grid(row=row + 1, column=0, columnspan=2, sticky="nsew", padx=16, pady=(2, 4))
+        # 곡이 수백 개일 수 있어 CTk 위젯 대신 tk.Listbox 하나로 그림 (BiblePicker 와 같은 이유)
+        self.ccm_listbox = tk.Listbox(box, height=self.CCM_ROWS, width=56, activestyle="none", borderwidth=0,
+                                      highlightthickness=0, exportselection=False, font=tk_font(self, 14),
+                                      bg=_pick(SUBTLE), fg=_pick(TEXT), selectbackground=_pick(ACCENT),
+                                      selectforeground="#FFFFFF")
+        sb = ctk.CTkScrollbar(box, command=self.ccm_listbox.yview)
+        self.ccm_listbox.configure(yscrollcommand=sb.set)
+        self.ccm_listbox.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=6)
+        sb.pack(side="right", fill="y", padx=2, pady=4)
+        self.ccm_count = ctk.CTkLabel(body, text="", font=font(11), text_color=TEXT2, anchor="w")
+        self.ccm_count.grid(row=row + 2, column=0, columnspan=2, sticky="w", padx=16)
+
+        self.value_entry.bind("<KeyRelease>", self._ccm_on_key)
+        for seq, d in (("<Down>", 1), ("<Up>", -1), ("<Next>", 10), ("<Prior>", -10)):
+            self.value_entry.bind(seq, lambda e, d=d: self._ccm_move(d))
+        self.ccm_listbox.bind("<Double-Button-1>", lambda e: self._ok())
+        current = current.replace("\\", "/")
+        if current and current not in self._ccm_files:  # 폴더에서 사라진 파일 → 이름으로 검색해 보여 줌
+            self.value_entry.insert(0, ccm_title(current))
+        self._ccm_refresh(select=current)
+
+    def _ccm_on_key(self, event):
+        if event.keysym in ("Up", "Down", "Prior", "Next", "Return", "KP_Enter", "Escape"):
+            return
+        if self._ccm_job:
+            self.after_cancel(self._ccm_job)
+        self._ccm_job = self.after(120, self._ccm_refresh)  # 한글 조합 중 매 키마다 다시 그리지 않도록
+
+    def _ccm_refresh(self, select: str = ""):
+        self._ccm_job = None
+        self._ccm_shown = search_names(self._ccm_titles, self.value_entry.get())
+        lb = self.ccm_listbox
+        lb.delete(0, "end")
+        for i in self._ccm_shown:
+            lb.insert("end", f"  🎵  {self._ccm_titles[i]}")
+        if not self._ccm_files:
+            text = "CCM 폴더에 PPT 파일이 없습니다. 왼쪽 [폴더]에서 CCM 폴더를 지정해 주세요."
+        elif not self._ccm_shown:
+            text = "검색 결과가 없습니다."
+        else:
+            text = f"{len(self._ccm_shown)}개 / 전체 {len(self._ccm_files)}개   ·   ↑↓ 이동, Enter 확인, 더블클릭 선택"
+        self.ccm_count.configure(text=text)
+        if self._ccm_shown:
+            pos = next((k for k, i in enumerate(self._ccm_shown) if self._ccm_files[i] == select), 0)
+            self._ccm_select(pos)
+
+    def _ccm_select(self, pos: int):
+        lb = self.ccm_listbox
+        lb.selection_clear(0, "end")
+        lb.selection_set(pos)
+        lb.activate(pos)
+        lb.see(pos)
+
+    def _ccm_move(self, delta: int):
+        if self._ccm_shown:
+            cur = self.ccm_listbox.curselection()
+            self._ccm_select(max(0, min(len(self._ccm_shown) - 1, (cur[0] + delta) if cur else 0)))
+        return "break"
+
+    def _ccm_value(self) -> str:
+        if self._ccm_job:  # 입력 직후 Enter → 검색 결과부터 반영
+            self.after_cancel(self._ccm_job)
+            self._ccm_refresh()
+        cur = self.ccm_listbox.curselection()
+        return self._ccm_files[self._ccm_shown[cur[0]]] if cur else ""
+
     @staticmethod
     def _lbl(master, row, text):
         ctk.CTkLabel(master, text=text, font=font(13), text_color=TEXT, anchor="w", width=130).grid(
@@ -517,7 +601,8 @@ class ItemDialog(_Modal):
                 self.options.pop("bible", None)
         if self.preacher_entry is not None:
             self.options["preacher"] = self.preacher_entry.get()
-        item = make_item(self.kind, label, self.value_entry.get(), self.options)
+        value = self._ccm_value() if self.ccm_listbox is not None else self.value_entry.get()
+        item = make_item(self.kind, label, value, self.options)
         err = validate_item(item)
         if err:
             messagebox.showerror("입력 오류", err, parent=self)
@@ -820,7 +905,7 @@ class DragController:
         except tk.TclError:
             pass
         tk.Label(g, text=f"  {self._text}  ", bg=_pick(ACCENT), fg="#FFFFFF",
-                 font=(FONT_FAMILY, 11, "bold"), padx=6, pady=4).pack()
+                 font=tk_font(self.root, 15, "bold"), padx=scaled(self.root, 6), pady=scaled(self.root, 4)).pack()
         self._ghost = g
         try:
             self.root.configure(cursor="fleur")

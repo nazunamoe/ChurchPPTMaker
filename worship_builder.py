@@ -10,7 +10,7 @@ from typing import Callable
 
 from bible_bridge import Bible2PPT, Bible2PPTError
 from config_manager import ConfigManager
-from models import KIND_BIBLE, KIND_HYMN, KIND_PRAYER, KIND_SERMON, ServiceItem, hymn_number
+from models import KIND_BIBLE, KIND_CCM, KIND_HYMN, KIND_PRAYER, KIND_SERMON, ServiceItem, ccm_title, hymn_number
 from ppt_engine import MERGE_SOURCE_FORMATTING, MergeJob, PptEngine, PptEngineError
 
 PPT_EXTS = (".pptx", ".pptm", ".ppt")
@@ -77,6 +77,31 @@ def find_hymn(folder: Path, value: str) -> Path | None:
     return None
 
 
+def list_ccm_files(folder: Path) -> list[str]:
+    """CCM 폴더(하위 포함)의 PPT → 폴더 기준 상대 경로('/' 구분). 파일명이 정형화돼 있지 않아 검색해서 고른다."""
+    files = list_ppt_files(folder, recursive=True)
+    return sorted((p.relative_to(folder).as_posix() for p in files), key=lambda r: (ccm_title(r).lower(), r))
+
+
+def find_ccm(folder: Path, value: str) -> Path | None:
+    """① 저장된 상대 경로 그대로 ② (파일이 다른 하위 폴더로 옮겨졌으면) 같은 파일 이름 ③ 공백·대소문자 무시 이름.
+    presets.json 등은 외부 입력이므로 CCM 폴더 밖을 가리키는 경로('..', 절대 경로)는 인정하지 않는다."""
+    value = value.replace("\\", "/").strip()
+    if not value or not folder.is_dir():
+        return None
+    root = folder.resolve()
+    p = (root / value).resolve()
+    if p.is_relative_to(root) and p.is_file() and p.suffix.lower() in PPT_EXTS:
+        return p
+    files = list_ppt_files(folder, recursive=True)
+    name = value.rsplit("/", 1)[-1]
+    for q in files:
+        if q.name == name:
+            return q
+    title = _norm(ccm_title(value))
+    return next((q for q in files if _norm(q.stem) == title), None)
+
+
 @dataclass
 class BuildRequest:
     items: list[ServiceItem]
@@ -96,6 +121,7 @@ class WorshipBuilder:
     def resolve(self, items: list[ServiceItem]) -> tuple[list[Path | None], list[str]]:
         tdir = self.cfg.resolve_path("template_dir")
         hdir = self.cfg.resolve_path("hymn_dir")
+        cdir = self.cfg.resolve_path("ccm_dir")
         paths: list[Path | None] = []
         problems: list[str] = []
         for idx, it in enumerate(items, 1):
@@ -106,6 +132,10 @@ class WorshipBuilder:
                 p = find_hymn(hdir, it.value)
                 if not p:
                     problems.append(f"{idx}. 찬송 '{it.value}' — 찬송가 폴더에서 PPT 를 찾지 못함")
+            elif it.kind == KIND_CCM:
+                p = find_ccm(cdir, it.value)
+                if not p:
+                    problems.append(f"{idx}. CCM '{it.display_value}' — CCM 폴더에서 PPT 를 찾지 못함")
             else:
                 name = {KIND_PRAYER: "기도", KIND_SERMON: "설교"}.get(it.kind, it.label)
                 p = find_template(tdir, name)
@@ -162,9 +192,9 @@ class WorshipBuilder:
             pcfg = self.cfg.get("ppt")
             jobs = []
             for it, p in zip(req.items, paths):
-                title = f"{it.label} {it.display_value if it.kind == KIND_SERMON else it.value}".strip()
+                title = f"{it.label} {it.display_value if it.kind in (KIND_SERMON, KIND_CCM) else it.value}".strip()
                 jobs.append(MergeJob(source=p, title=title, fill_values=it.fill_values,
-                                     warn_missing=it.kind != KIND_HYMN))
+                                     warn_missing=it.kind not in (KIND_HYMN, KIND_CCM)))
 
             base = 0.4 if n_bible else 0.0
 

@@ -2,8 +2,9 @@
 
 예배 순서를 화면에서 끌어다 놓아 구성하면, 순서마다 맞는 PowerPoint 파일을 찾아 **한 개의 예배 PPT로 자동 병합**해 주는 Windows 프로그램입니다.
 
-- 기도·찬송·말씀·사용자 지정 순서를 **드래그&드롭**으로 배치
+- 기도·찬송·말씀·설교·CCM·사용자 지정 순서를 **드래그&드롭**으로 배치
 - 찬송가 장 번호로 찬송가 PPT를 **폴더에서 자동 검색**
+- 파일 이름이 제각각인 CCM PPT는 CCM 폴더에서 **곡명으로 검색해서 선택** (초성 검색 가능)
 - 성경 구절(`요3:16`, `롬1-3` 등)을 [Bible2PPT](https://github.com/nazunamoe/Bible2PPT)로 **자동 생성**
 - 기도자 이름 등 문구를 템플릿의 지정 위치에 **자동 입력**
 - 원본 템플릿의 **서식·폰트·애니메이션·레이아웃·배경을 그대로 유지**하며 병합
@@ -39,6 +40,7 @@ config.json     사용자 설정
 presets.json    예배 순서 프리셋 (기본 3종: 주일오전예배, 주일오후예배, 수요예배)
 templates\      순서별 PPT 템플릿 폴더
 hymns\          찬송가 PPT 폴더
+ccm\            CCM PPT 폴더
 output\         완성된 예배 PPT 저장 폴더
 ```
 
@@ -70,7 +72,7 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --collect-dat
 
 - 결과물: `dist\ChurchPPTMaker.exe` (약 14MB)
 - `--collect-data customtkinter`는 UI 테마 파일을 포함하기 위해 **반드시** 필요합니다.
-- exe를 처음 실행하면 `config.json`, `presets.json`, `templates\`, `hymns\`, `output\`이 **exe와 같은 폴더**에 만들어집니다.
+- exe를 처음 실행하면 `config.json`, `presets.json`, `templates\`, `hymns\`, `ccm\`, `output\`이 **exe와 같은 폴더**에 만들어집니다.
   다른 컴퓨터로 옮길 때는 exe와 함께 이 파일·폴더들을 같이 복사하면 설정과 템플릿이 그대로 유지됩니다.
 - 빌드 중 생기는 `build\` 폴더와 `ChurchPPTMaker.spec` 파일은 지워도 됩니다.
 
@@ -81,12 +83,13 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --collect-dat
 ## 4. 처음 설정하기
 
 ### 4-1. 폴더 지정
-왼쪽 **[폴더]** 영역에서 📁 버튼으로 세 폴더를 지정합니다. (↗ 버튼은 해당 폴더를 탐색기로 엽니다.)
+왼쪽 **[폴더]** 영역에서 📁 버튼으로 네 폴더를 지정합니다. (↗ 버튼은 해당 폴더를 탐색기로 엽니다.)
 
 | 폴더 | 넣을 파일 |
 |---|---|
 | 템플릿 | 순서별 PPT (`기도.pptx`, `예배로 부름.pptx`, `설교.pptx`, `축도.pptx` …) |
 | 찬송가 | 찬송가 PPT (하위 폴더까지 검색) |
+| CCM | CCM PPT (하위 폴더까지 검색, 파일 이름은 자유) |
 | 출력 | 완성된 예배 PPT가 저장될 곳 |
 
 ### 4-2. Bible2PPT 연결 (말씀 기능)
@@ -160,7 +163,7 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --collect-dat
 - **예배 종류**: 파일 이름에 들어갑니다. 프리셋을 불러오면 프리셋 이름으로 자동 입력됩니다.
 
 ### 6-2. 예배 순서 만들기 (오른쪽 "순서" 패널)
-- 아래쪽 **[기도] [찬송] [말씀] [설교] [사용자 지정]** 버튼을 순서 목록 위 원하는 위치로 **끌어다 놓습니다**.
+- 아래쪽 **[기도] [찬송] [말씀] [설교] [CCM] [사용자 지정]** 버튼을 순서 목록 위 원하는 위치로 **끌어다 놓습니다**.
   버튼을 그냥 클릭하면 맨 아래에 추가됩니다.
 - 추가할 때 입력 창이 뜹니다. **필수 항목을 비우면 오류**가 표시됩니다.
 
@@ -170,6 +173,7 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --collect-dat
   | 찬송 | 찬송가 장 (필수, `29` 또는 `29장`) | 찬송가 폴더에서 검색 |
   | 말씀 | 성경 구절 (필수), 역본 (선택) | Bible2PPT로 생성 |
   | 설교 | 설교 제목 (필수), 설교자 (필수) | 템플릿 폴더의 `설교.pptx` + 제목·설교자 자동 입력 |
+  | CCM | CCM 폴더의 파일을 곡명으로 검색해 선택 (필수) | 선택한 CCM PPT 그대로 |
   | 사용자 지정 | 호출할 PPT 이름 (필수), 오른쪽 문구 (선택) | 템플릿 폴더에서 같은 이름의 PPT |
 
 - 왼쪽 **[템플릿 파일]** 목록의 파일도 순서 목록으로 끌어다 놓거나 더블클릭해서 추가할 수 있습니다.
@@ -259,6 +263,7 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --collect-dat
 | 증상 | 해결 방법 |
 |---|---|
 | "템플릿 폴더에 'OOO.pptx' 없음" | 순서 이름과 파일 이름이 같은지 확인 (띄어쓰기는 무시됨) |
+| "CCM 폴더에서 PPT를 찾지 못함" | 선택했던 CCM 파일이 지워졌거나 이름이 바뀜 → 항목을 클릭해 다시 선택 |
 | "찬송가 폴더에서 PPT를 찾지 못함" | 파일 이름에 장 번호가 첫 번째 숫자로 들어 있는지 확인 (5-4 참고) |
 | "Bible2PPT.exe 경로가 설정되지 않았습니다" | ⚙ 설정에서 exe 경로 지정 |
 | 성경 PPT 생성 실패 (인자 오류) | 구절 형식과 역본 이름 확인, ↻로 역본 목록을 다시 불러오기 |
@@ -267,7 +272,7 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --collect-dat
 | "슬라이드 크기가 다릅니다" 경고 | 첫 번째 순서 PPT 크기(16:9/4:3)로 맞춰집니다. 템플릿 크기를 통일하면 사라짐 |
 | PowerPoint를 실행할 수 없음 | PowerPoint 설치·정품 인증 상태 확인, 열려 있는 대화 상자가 있으면 닫기 |
 
-> 원본 템플릿·찬송가 파일은 **읽기 전용으로만 열기** 때문에 절대 수정되지 않습니다.
+> 원본 템플릿·찬송가·CCM 파일은 **읽기 전용으로만 열기** 때문에 절대 수정되지 않습니다.
 
 ---
 

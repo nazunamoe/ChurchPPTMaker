@@ -17,13 +17,13 @@ import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, parse_references
 from config_manager import MAX_PRESETS, ConfigManager, PresetManager, save_worship_to_text, load_worship_from_text
-from models import (KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, ServiceItem, make_item,
+from models import (KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, ServiceItem, make_item,
                     validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
                         TEXT2, BibleField, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog,
                         accent_button, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
-from worship_builder import BuildError, BuildRequest, WorshipBuilder, list_ppt_files, output_filename
+from worship_builder import BuildError, BuildRequest, WorshipBuilder, list_ccm_files, list_ppt_files, output_filename
 
 APP_TITLE = "예배 순서 PPT 제작 프로그램 v1.0"
 DATE_FMT = "%Y-%m-%d"
@@ -32,6 +32,18 @@ MIN_FILE_ROWS = 4  # 최소 창 크기에서도 템플릿 파일 목록이 이�
 RESIZE_SETTLE_MS = 150  # 창 크기 조절이 이 시간 동안 멈추면 그때 내용 배치를 새 크기로 맞춤
 # PyInstaller onefile 은 번들 파일을 sys._MEIPASS 에 풀어 둠
 ICON_PATH = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets" / "app.ico"
+
+
+def _enable_per_monitor_dpi_v2():
+    """Windows 배율이 바뀔 때 창 틀(제목 표시줄·테두리)까지 다시 그려지도록 Per-Monitor V2 DPI 모드를 켠다 (Tk 생성 전).
+    CTk 는 V1(SetProcessDpiAwareness(2))을 쓰는데, V1 에선 창 틀을 Windows 가 다시 맞춰 주지 않아 옛 배율 크기로 남는다.
+    먼저 V2 로 정해 두면 CTk 의 V1 호출은 '이미 설정됨'으로 무시되고, CTk 의 DPI 감지(GetDpiForMonitor)는 그대로 동작한다.
+    V2 를 지원하지 않는 Windows(10 1703 이전)면 아무것도 하지 않음 → CTk 의 V1 로 동작."""
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    except (AttributeError, OSError):
+        pass
 
 
 def _set_app_user_model_id():
@@ -82,6 +94,7 @@ def _powerpoint_exe() -> Path | None:
 
 class App(ctk.CTk):
     def __init__(self):
+        _enable_per_monitor_dpi_v2()
         self.cfg = ConfigManager()
         self.presets = PresetManager()
         ctk.set_appearance_mode(self.cfg.get("appearance_mode") or "System")
@@ -126,6 +139,7 @@ class App(ctk.CTk):
         self._update_bible_status()
         self._load_bible_list_if_needed()
         ctk.AppearanceModeTracker.add(self._on_appearance_change)  # '시스템' 모드에서 Windows 테마가 바뀔 때도 호출됨
+        ctk.ScalingTracker.add_widget(self._on_scaling_change, self)  # Windows 배율 변경·다른 배율 모니터로 이동
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         pump_ui_queue(self)
 
@@ -147,13 +161,44 @@ class App(ctk.CTk):
         tk.Place.place_configure(self._content, relwidth="", relheight="",
                                  width=self._content_size[0], height=self._content_size[1])
 
+    def _work_area(self) -> tuple[int, int, int, int]:
+        """창이 있는(아직 없으면 가장 가까운) 모니터의 작업 영역 (왼, 위, 오른, 아래) — 실제 픽셀, 작업 표시줄 제외.
+        winfo_screenwidth 는 DPI 모드에 따라 논리/실제 단위가 달라서(V1: 논리, V2: 실제) 쓰지 않는다."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                            ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+            u = ctypes.windll.user32
+            u.MonitorFromWindow.restype = wintypes.HMONITOR
+            u.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+            info = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+            if u.GetMonitorInfoW(u.MonitorFromWindow(self.winfo_id(), 2), ctypes.byref(info)):  # MONITOR_DEFAULTTONEAREST
+                r = info.rcWork
+                return r.left, r.top, r.right, r.bottom
+        except (AttributeError, OSError):
+            pass
+        return 0, 0, self.winfo_screenwidth(), self.winfo_screenheight()
+
+    def _available_size(self) -> tuple[int, int]:
+        """창이 쓸 수 있는 최대 크기 (CTk 논리 단위, 제목 표시줄·여유 제외)."""
+        left, top, right, bottom = self._work_area()
+        scale = ctk.ScalingTracker.get_window_scaling(self)
+        return int((right - left) / scale) - 20, int((bottom - top) / scale) - 50
+
     def _fit_to_screen(self, w: int, h: int):
         """화면 배율(DPI)을 고려해 창이 화면 밖으로 나가지 않게 크기/위치를 정한다."""
         self.update_idletasks()
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        w, h = min(w, sw - 40), min(h, sh - 90)
+        aw, ah = self._available_size()
+        w, h = min(w, aw), min(h, ah)
+        left, top, right, bottom = self._work_area()
         scale = ctk.ScalingTracker.get_window_scaling(self)  # 크기는 논리 단위, 위치는 실제 픽셀
-        self.geometry(f"{w}x{h}+{int(max((sw - w) // 2, 0) * scale)}+{int(max((sh - h) // 3, 0) * scale)}")
+        x = left + max((right - left - int(w * scale)) // 2, 0)
+        y = top + max((bottom - top - int(h * scale)) // 3, 0)
+        self.geometry(f"{w}x{h}+{x}+{y}")
         self.minsize(min(1000, w), min(660, h))
 
     def _apply_min_size(self):
@@ -167,7 +212,7 @@ class App(ctk.CTk):
             return
         scale = ctk.ScalingTracker.get_window_scaling(self)
         need = math.ceil((self.winfo_height() - lb.winfo_height() + lb.winfo_reqheight()) / scale)  # 픽셀 → 논리 단위
-        screen = self.winfo_screenheight() - 90  # _fit_to_screen 과 같은 기준 (논리 단위)
+        screen = self._available_size()[1]  # _fit_to_screen 과 같은 기준 (논리 단위)
         self.minsize(round(self.wm_minsize()[0] / scale), max(660, min(need, screen)))
 
     # ================================================================ 상단
@@ -234,7 +279,8 @@ class App(ctk.CTk):
         ctk.CTkLabel(fc, text="폴더", font=font(15, "bold"), text_color=TEXT).grid(
             row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(10, 4))
         self.path_vars: dict[str, tk.StringVar] = {}
-        for r, (key, name) in enumerate([("template_dir", "템플릿"), ("hymn_dir", "찬송가"), ("output_dir", "출력")], 1):
+        folders = [("template_dir", "템플릿"), ("hymn_dir", "찬송가"), ("ccm_dir", "CCM"), ("output_dir", "출력")]
+        for r, (key, name) in enumerate(folders, 1):
             ctk.CTkLabel(fc, text=name, font=font(12), text_color=TEXT2, width=44, anchor="w").grid(
                 row=r, column=0, padx=(14, 4), pady=3, sticky="w")
             var = tk.StringVar(value=str(self.cfg.resolve_path(key)))
@@ -245,7 +291,7 @@ class App(ctk.CTk):
             b1.grid(row=r, column=2, padx=(4, 0), pady=3)
             b2 = secondary_button(fc, "↗", lambda k=key: self._open_folder(k), width=32)
             b2.grid(row=r, column=3, padx=(4, 14), pady=3)
-        ctk.CTkFrame(fc, width=1, height=6, fg_color="transparent").grid(row=4, column=0)
+        ctk.CTkFrame(fc, width=1, height=6, fg_color="transparent").grid(row=len(folders) + 1, column=0)
 
         # 템플릿 파일 목록
         tc = card(left)
@@ -343,11 +389,12 @@ class App(ctk.CTk):
         self.scroll.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         self.scroll.grid_columnconfigure(0, weight=1)
 
-        # 팔레트: [기도] [찬송] [말씀] [설교] [사용자 지정] — 드래그&드롭
+        # 팔레트: [기도] [찬송] [말씀] [설교] [CCM] [사용자 지정] — 드래그&드롭
+        # 버튼 폭 합계가 최소 창 폭의 순서 패널(약 570)을 넘지 않도록 할 것
         pal = ctk.CTkFrame(oc, fg_color="transparent")
         pal.grid(row=3, column=0, sticky="ew", padx=16, pady=(10, 4))
-        for kind in (KIND_PRAYER, KIND_HYMN, KIND_BIBLE, KIND_SERMON, KIND_CUSTOM):
-            b = ctk.CTkButton(pal, text=KIND_LABELS[kind], width=96 if kind != KIND_CUSTOM else 120, height=38,
+        for kind in (KIND_PRAYER, KIND_HYMN, KIND_BIBLE, KIND_SERMON, KIND_CCM, KIND_CUSTOM):
+            b = ctk.CTkButton(pal, text=KIND_LABELS[kind], width=78 if kind != KIND_CUSTOM else 108, height=38,
                               corner_radius=8, fg_color=CARD, hover_color=BTN_HOVER, border_width=2,
                               border_color=KIND_COLORS[kind], text_color=TEXT, font=font(14, "bold"))
             b.pack(side="left", padx=(0, 8))
@@ -397,7 +444,7 @@ class App(ctk.CTk):
         self.indicator = ctk.CTkFrame(self.scroll, height=4, fg_color=ACCENT, corner_radius=0, border_width=0)
 
         if not self.items:
-            ctk.CTkLabel(self.scroll, text="아래 [기도] [찬송] [말씀] [설교] [사용자 지정] 버튼을 끌어다 놓아\n예배 순서를 추가하세요.",
+            ctk.CTkLabel(self.scroll, text="아래 [기도] [찬송] [말씀] [설교] [CCM] [사용자 지정] 버튼을 끌어다 놓아\n예배 순서를 추가하세요.",
                          font=font(13), text_color=TEXT2, justify="center").pack(pady=60)
         for idx, item in enumerate(self.items):
             self.row_widgets.append(self._make_row(idx, item))
@@ -509,8 +556,9 @@ class App(ctk.CTk):
         return [p.stem for p in list_ppt_files(self.cfg.resolve_path("template_dir"))]
 
     def _dialog(self, kind: str, item: ServiceItem | None = None) -> ServiceItem | None:
-        return ItemDialog(self, kind, item, template_names=self._template_names(),
-                          bible_values=self.bible_values, default_bible=self.bible_field.get().strip()).show()
+        ccm = list_ccm_files(self.cfg.resolve_path("ccm_dir")) if kind == KIND_CCM else None
+        return ItemDialog(self, kind, item, template_names=self._template_names(), bible_values=self.bible_values,
+                          default_bible=self.bible_field.get().strip(), ccm_files=ccm).show()
 
     def _prompt_new(self, kind: str, idx: int):
         item = self._dialog(kind)
@@ -521,7 +569,7 @@ class App(ctk.CTk):
         idx = len(self.items) if idx is None else max(0, min(idx, len(self.items)))
         self.items.insert(idx, item)
         self._render_list()
-        self._set_status(f"추가됨: {item.label} {item.value}".strip())
+        self._set_status(f"추가됨: {item.label} {item.display_value}".strip())
         if idx == len(self.items) - 1:
             self.after(30, lambda: self.scroll._parent_canvas.yview_moveto(1.0))
 
@@ -542,7 +590,7 @@ class App(ctk.CTk):
     def _remove_item(self, idx: int):
         removed = self.items.pop(idx)
         self._render_list()
-        self._set_status(f"삭제됨: {removed.label} {removed.value}".strip())
+        self._set_status(f"삭제됨: {removed.label} {removed.display_value}".strip())
 
     def _clear_items(self):
         if self.items and messagebox.askyesno("전체 비우기", "순서 목록을 모두 비울까요?", parent=self):
@@ -737,6 +785,17 @@ class App(ctk.CTk):
         """일반 tk 위젯(순서 행·템플릿 목록)은 CTk 처럼 색이 자동으로 바뀌지 않으므로 다시 칠한다.
         CTk 가 콜백 목록을 도는 중이라 위젯 파괴(콜백 제거)는 다음 루프에서."""
         self.after_idle(lambda: (self._style_file_listbox(), self._render_list()))
+
+    def _on_scaling_change(self, _widget_scaling: float, _window_scaling: float):
+        """일반 tk 위젯(순서 행·템플릿 목록)의 글꼴·여백은 만들 때의 배율로 고정되므로 새 배율로 다시 만든다.
+        CTk 위젯은 CTk 가 알아서 다시 그림. 콜백 순회 중이므로 위젯 파괴는 다음 루프에서."""
+        self.after_idle(self._rescale_plain_widgets)
+
+    def _rescale_plain_widgets(self):
+        lb = self.file_listbox
+        lb.configure(font=tk_font(self, 12))
+        lb.pack_configure(padx=(scaled(self, 8), 0), pady=scaled(self, 6))
+        self._render_list()
 
     def _set_mode(self, label: str):
         mode = MODES[label]

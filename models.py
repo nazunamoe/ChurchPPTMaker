@@ -10,6 +10,7 @@ KIND_PRAYER = "prayer"   # 기도.pptx 호출 + 기도자 이름 입력
 KIND_HYMN = "hymn"       # 오른쪽 장 번호로 찬송가 폴더에서 검색
 KIND_BIBLE = "bible"     # Bible2PPT 로 구절 PPT 생성
 KIND_SERMON = "sermon"   # 설교.pptx 호출 + 설교 제목({{내용1}})·설교자({{내용2}}) 입력
+KIND_CCM = "ccm"         # CCM 폴더에서 검색해 고른 파일 (value = CCM 폴더 기준 상대 경로)
 
 MAX_FILL = 3             # 항목당 텍스트 입력칸 수 ({{내용1}} ~ {{내용3}})
 
@@ -18,6 +19,7 @@ KIND_LABELS = {
     KIND_HYMN: "찬송",
     KIND_BIBLE: "말씀",
     KIND_SERMON: "설교",
+    KIND_CCM: "CCM",
     KIND_CUSTOM: "사용자 지정",
 }
 
@@ -45,6 +47,8 @@ class ServiceItem:
     def display_value(self) -> str:
         if self.kind == KIND_SERMON:
             return " · ".join(v for v in (self.value, self.options.get("preacher", "")) if v) or "—"
+        if self.kind == KIND_CCM and self.value:
+            return ccm_title(self.value)
         return self.value if self.value else "—"
 
     @property
@@ -64,6 +68,13 @@ def numbered_token(base: str, n: int) -> str:
     if base.endswith("}}") and len(base) > 2:
         return f"{base[:-2]}{n}}}}}"
     return f"{base}{n}"
+
+
+def ccm_title(value: str) -> str:
+    """CCM 상대 경로 'a/주님 다시 오실 때.pptx' → '주님 다시 오실 때' (화면 표시용)."""
+    name = value.replace("\\", "/").rsplit("/", 1)[-1]
+    stem, dot, ext = name.rpartition(".")
+    return stem if dot and ext.lower() in ("pptx", "pptm", "ppt") else name
 
 
 def normalize_hymn(value: str) -> str:
@@ -93,6 +104,9 @@ def make_item(kind: str, label: str, value: str, options: dict | None = None) ->
         value = normalize_hymn(value)
     elif kind == KIND_BIBLE:
         label = "말씀"
+    elif kind == KIND_CCM:
+        label = "CCM"
+        value = value.replace("\\", "/")
     elif kind == KIND_SERMON:
         label = "설교"
         options = dict(options or {})
@@ -121,6 +135,8 @@ def validate_item(item: ServiceItem) -> str | None:
             return "설교 제목을 입력해 주세요."
         if not item.options.get("preacher"):
             return "설교자를 입력해 주세요."
+    if item.kind == KIND_CCM and not item.value:
+        return "CCM 파일을 선택해 주세요."
     if item.kind == KIND_CUSTOM and not item.label:
         return "호출할 PPT 이름을 입력해 주세요."
     return None
