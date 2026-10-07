@@ -15,7 +15,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from bible_bridge import Bible2PPT, parse_references
+from bible_bridge import Bible2PPT, Bible2PPTError, parse_references
 from config_manager import MAX_PRESETS, ConfigManager, PresetManager, save_worship_to_text, load_worship_from_text
 from models import (KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, ServiceItem, make_item,
                     validate_item)
@@ -575,6 +575,15 @@ class App(ctk.CTk):
                 messagebox.showerror("기도 템플릿 없음", "기도 템플릿 폴더에 PPT 파일이 없습니다.\n"
                                      "합심기도.pptx, 중보기도.pptx 처럼 기도 종류별 PPT 를 넣어 주세요.", parent=self)
                 return False
+        if kind == KIND_BIBLE:
+            try:
+                self._bible2ppt().check()  # exe 미설정·없음·.exe 아님·명령줄 미지원 버전
+            except Bible2PPTError as e:
+                msg = f"말씀을 추가하려면 Bible2PPT 가 필요합니다.\n\n{e}"
+                if "⚙ 설정" not in str(e):  # 미설정 메시지에는 이미 안내가 들어 있음
+                    msg += "\n\n상단 ⚙ 설정 → Bible2PPT 연동에서 Bible2PPT.exe 를 지정해 주세요."
+                messagebox.showerror("Bible2PPT 설정 필요", msg, parent=self)
+                return False
         if kind == KIND_SERMON and sermon_template(self.cfg) is None:
             messagebox.showerror("설교 템플릿 설정 필요", "설교 템플릿 PPT 가 설정되지 않았거나 찾을 수 없습니다.\n"
                                  "상단 ⚙ 설정 → 기도 · 설교 템플릿에서 설교 템플릿 PPT 를 지정해 주세요.", parent=self)
@@ -708,6 +717,8 @@ class App(ctk.CTk):
         os.startfile(path)
 
     def _add_bible_from_form(self):
+        if not self._can_add(KIND_BIBLE):
+            return
         text = self.verse_entry.get().strip()
         if not text:
             messagebox.showerror("입력 오류", "성경 구절을 입력해 주세요.", parent=self)
