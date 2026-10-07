@@ -182,6 +182,11 @@ Bible2PPT.exe <성경 구절...> [옵션]
   2. 위젯 수백 개 재배치 자체가 수백 ms → 모든 내용은 `App._content`(CTkFrame) 안에 두고, 창 `<Configure>` 가
      `RESIZE_SETTLE_MS`(150ms) 동안 멈췄을 때만 `_fit_content` 로 실제 픽셀 크기를 지정(재배치 1회). 새 위젯은 `self` 가 아니라
      `self._content` 에 grid 할 것 (오버레이 `_Modal`·달력은 그대로 창(`winfo_toplevel`)에 place).
+  3. 위젯(HWND) 수 줄이기 (리사이즈 후 재배치 557ms → 322ms, 템플릿 파일 수와 무관):
+     순서 행은 둥근 알약 2개만 CTkButton, 행 틀·손잡이·연결선·▲▼✕ 는 일반 tk 위젯(`mode_color`/`scaled`/`tk_font` 로 CTk 와 같은 색·크기).
+     템플릿 파일 목록은 `tk.Listbox` 하나 (`DragController.attach` 에 payload 함수를 넘겨 누른 위치의 항목을 드래그,
+     기본 클릭 선택 바인딩은 "break" 로 끄고 `_select_file` 만 선택 표시). 일반 tk 위젯은 모드 전환 시
+     `AppearanceModeTracker` 콜백(`_on_appearance_change`)에서 다시 칠함 — 콜백 순회 중이므로 `after_idle` 로 지연.
   - 참고: 일반 tk.Label 200개도 리사이즈당 ~200ms → Windows 에선 위젯(HWND) 수가 곧 비용. 목록형 UI 는 위젯 수를 줄일 것.
 
 ## 11-1. 보안 규칙 (2026-10-07 점검)

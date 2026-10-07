@@ -20,7 +20,8 @@ from models import (KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER
                     validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
                         TEXT2, BibleField, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog,
-                        accent_button, card, font, post_to_ui, pump_ui_queue, run_in_thread, secondary_button)
+                        accent_button, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
+                        secondary_button, tk_font)
 from worship_builder import BuildError, BuildRequest, WorshipBuilder, list_ppt_files, output_filename
 
 APP_TITLE = "예배 순서 PPT 제작 프로그램 v1.0"
@@ -91,8 +92,8 @@ class App(ctk.CTk):
         _disable_full_redraw_on_resize(self)
 
         self.items: list[ServiceItem] = []
-        self.row_widgets: list[ctk.CTkFrame] = []
-        self.file_buttons: dict[str, ctk.CTkButton] = {}
+        self.row_widgets: list[tk.Frame] = []
+        self._shown_files: list[str] = []  # 템플릿 목록 상자에 보이는 순서대로의 파일 이름
         self.selected_file: str | None = None
         self.bible_values: list[str] = list(self.cfg.get("bible2ppt", "bible_list") or [])
         self._bible_loading = False
@@ -122,6 +123,7 @@ class App(ctk.CTk):
         self._render_list()
         self._update_bible_status()
         self._load_bible_list_if_needed()
+        ctk.AppearanceModeTracker.add(self._on_appearance_change)  # '시스템' 모드에서 Windows 테마가 바뀔 때도 호출됨
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         pump_ui_queue(self)
 
@@ -242,8 +244,23 @@ class App(ctk.CTk):
         self.file_search = ctk.CTkEntry(tc, height=30, font=font(12), placeholder_text="🔍  파일 이름 검색")
         self.file_search.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 6))
         self.file_search.bind("<KeyRelease>", lambda e: self._render_files())
-        self.file_list = ctk.CTkScrollableFrame(tc, fg_color=SUBTLE, corner_radius=8, height=120)
-        self.file_list.grid(row=2, column=0, sticky="nsew", padx=14)
+        # 파일마다 CTkButton 을 만들면 파일 수만큼 위젯(HWND)이 늘어 창 크기 조절이 느려진다 → tk.Listbox 하나로 그림
+        box = ctk.CTkFrame(tc, fg_color=SUBTLE, corner_radius=8)
+        box.grid(row=2, column=0, sticky="nsew", padx=14)
+        self.file_listbox = tk.Listbox(box, height=5, activestyle="none", borderwidth=0, highlightthickness=0,
+                                       exportselection=False, selectmode="browse", font=tk_font(self, 12),
+                                       cursor="hand2")
+        sb = ctk.CTkScrollbar(box, command=self.file_listbox.yview)
+        self.file_listbox.configure(yscrollcommand=sb.set)
+        self.file_listbox.pack(side="left", fill="both", expand=True, padx=(scaled(self, 8), 0), pady=scaled(self, 6))
+        sb.pack(side="right", fill="y", padx=2, pady=4)
+        self.file_empty = ctk.CTkLabel(box, text="", font=font(12), text_color=TEXT2, fg_color=SUBTLE)
+        self.drag.attach(self.file_listbox, self._file_at)
+        # 기본 동작(누르기/끌기 = 커서 아래 항목 선택)은 끈다 → 선택 표시는 _select_file 만 바꿈 (빈 곳 클릭 시 엉뚱한 선택 방지)
+        for seq in ("<ButtonPress-1>", "<B1-Motion>"):
+            self.file_listbox.bind(seq, lambda e: "break", add="+")
+        self.file_listbox.bind("<Double-Button-1>", self._on_file_double_click)
+        self._style_file_listbox()
         foot = ctk.CTkFrame(tc, fg_color="transparent")
         foot.grid(row=3, column=0, sticky="ew", padx=14, pady=(6, 12))
         ctk.CTkLabel(foot, text="끌어다 놓기 · 더블클릭으로 추가", font=font(11), text_color=TEXT2).pack(side="left")
@@ -369,32 +386,42 @@ class App(ctk.CTk):
             self.row_widgets.append(self._make_row(idx, item))
         self.count_label.configure(text=f"{len(self.items)}개 항목")
 
-    def _make_row(self, idx: int, item: ServiceItem) -> ctk.CTkFrame:
-        row = ctk.CTkFrame(self.scroll, fg_color="transparent", height=46)
-        row.pack(fill="x", padx=6, pady=3)
+    def _make_row(self, idx: int, item: ServiceItem) -> tk.Frame:
+        # Windows 에선 위젯(HWND) 수가 곧 창 크기 조절·목록 갱신 비용이라(CLAUDE.md §11) 둥근 알약 2개만 CTk 로 그리고
+        # 나머지(행 틀·손잡이·연결선·▲▼✕)는 일반 tk 위젯으로 그린다. 색은 모드가 바뀌면 _on_appearance_change 가 다시 그림.
+        bg = mode_color(SUBTLE)
+        row = tk.Frame(self.scroll, bg=bg)
+        row.pack(fill="x", padx=scaled(self, 6), pady=scaled(self, 3))
 
-        handle = ctk.CTkLabel(row, text="⋮⋮", width=22, font=font(14, "bold"), text_color=TEXT2, cursor="fleur")
-        handle.pack(side="left", padx=(2, 6))
+        handle = tk.Label(row, text="⋮⋮", bg=bg, fg=mode_color(TEXT2), font=tk_font(self, 14, "bold"),
+                          width=2, cursor="fleur")
+        handle.pack(side="left", padx=(scaled(self, 2), scaled(self, 6)))
         self.drag.attach(handle, ("move", idx), f"{item.label}  {item.display_value}".strip())
 
-        left = ctk.CTkButton(row, text=item.label, width=140, height=36, corner_radius=10, fg_color=CARD,
+        left = ctk.CTkButton(row, text=item.label, width=140, height=36, corner_radius=10, fg_color=CARD, bg_color=SUBTLE,
                              hover_color=BTN_HOVER, border_width=2, border_color=KIND_COLORS[item.kind],
                              text_color=TEXT, font=font(13, "bold"), command=lambda i=idx: self._edit_item(i))
         left.pack(side="left")
-        ctk.CTkFrame(row, height=3, fg_color=PILL_BORDER, corner_radius=0, border_width=0).pack(side="left", fill="x", expand=True)
+        tk.Frame(row, height=max(1, scaled(self, 1.5)), bg=mode_color(PILL_BORDER)).pack(side="left", fill="x", expand=True)
         right = ctk.CTkButton(row, text=item.display_value, width=170, height=36, corner_radius=10, fg_color=CARD,
-                              hover_color=BTN_HOVER, border_width=1, border_color=PILL_BORDER,
+                              bg_color=SUBTLE, hover_color=BTN_HOVER, border_width=1, border_color=PILL_BORDER,
                               text_color=TEXT if item.display_value != "—" else TEXT2, font=font(13),
                               command=lambda i=idx: self._edit_item(i))
         right.pack(side="left")
 
-        tools = ctk.CTkFrame(row, fg_color="transparent")
-        tools.pack(side="left", padx=(8, 0))
+        tools = tk.Frame(row, bg=bg)
+        tools.pack(side="left", padx=(scaled(self, 8), 0))
+        hover = mode_color(BTN_HOVER)
         for text, cmd, color in (("▲", lambda i=idx: self._move_item(i, -1), TEXT2),
                                  ("▼", lambda i=idx: self._move_item(i, 1), TEXT2),
                                  ("✕", lambda i=idx: self._remove_item(i), DANGER)):
-            ctk.CTkButton(tools, text=text, width=28, height=28, corner_radius=6, fg_color="transparent",
-                          hover_color=BTN_HOVER, text_color=color, font=font(12), command=cmd).pack(side="left")
+            b = tk.Label(tools, text=text, bg=bg, fg=mode_color(color), font=tk_font(self, 12), cursor="hand2",
+                         padx=scaled(self, 7), pady=scaled(self, 4))
+            b.pack(side="left")
+            b.bind("<Enter>", lambda e, w=b: w.configure(bg=hover))
+            b.bind("<Leave>", lambda e, w=b: w.configure(bg=bg))
+            # 클릭 즉시 목록을 다시 그리면 이벤트 처리 중인 위젯이 사라지므로 다음 루프에서 실행
+            b.bind("<ButtonRelease-1>", lambda e, c=cmd: self.after_idle(c))
         return row
 
     # ================================================================ 드래그 & 드롭
@@ -511,30 +538,46 @@ class App(ctk.CTk):
         self._render_files()
 
     def _render_files(self):
-        for w in self.file_list.winfo_children():
-            w.destroy()
-        self.file_buttons = {}
         q = self.file_search.get().strip().lower()
-        shown = [p for p in self._files if q in p.stem.lower()]
-        self.file_count.configure(text=f"{len(shown)}개")
-        if not shown:
-            ctk.CTkLabel(self.file_list, text="PPT 파일이 없습니다.\n템플릿 폴더에 .pptx 를 넣어 주세요." if not q
-                         else "검색 결과가 없습니다.", font=font(12), text_color=TEXT2).pack(pady=20)
-        for p in shown:
-            b = ctk.CTkButton(self.file_list, text=f"📄  {p.stem}", anchor="w", height=30, corner_radius=6,
-                              fg_color=ACCENT if p.stem == self.selected_file else "transparent",
-                              hover_color=BTN_HOVER, font=font(12),
-                              text_color="#FFFFFF" if p.stem == self.selected_file else TEXT)
-            b.pack(fill="x", pady=1)
-            self.drag.attach(b, ("file", p.stem), p.stem)
-            b.bind("<Double-Button-1>", lambda e, s=p.stem: self._insert(ServiceItem(KIND_CUSTOM, s)), add="+")
-            self.file_buttons[p.stem] = b
+        self._shown_files = [p.stem for p in self._files if q in p.stem.lower()]
+        self.file_count.configure(text=f"{len(self._shown_files)}개")
+        lb = self.file_listbox
+        lb.delete(0, "end")
+        for stem in self._shown_files:
+            lb.insert("end", f"📄  {stem}")
+        if self.selected_file in self._shown_files:
+            lb.selection_set(self._shown_files.index(self.selected_file))
+        if self._shown_files:
+            self.file_empty.place_forget()
+        else:
+            self.file_empty.configure(text="PPT 파일이 없습니다.\n템플릿 폴더에 .pptx 를 넣어 주세요." if not q
+                                      else "검색 결과가 없습니다.")
+            self.file_empty.place(relx=0.5, rely=0.5, anchor="center")
+
+    def _style_file_listbox(self):
+        self.file_listbox.configure(bg=mode_color(SUBTLE), fg=mode_color(TEXT), selectbackground=mode_color(ACCENT),
+                                    selectforeground="#FFFFFF")
+
+    def _file_at(self, e) -> tuple[tuple[str, str], str] | None:
+        """목록 상자에서 누른 위치의 파일 → 드래그 payload (빈 공간이면 None)."""
+        lb = self.file_listbox
+        i = lb.nearest(e.y)
+        box = lb.bbox(i) if i >= 0 else None
+        if not box or not box[1] <= e.y < box[1] + box[3]:
+            return None
+        stem = self._shown_files[i]
+        return ("file", stem), stem
+
+    def _on_file_double_click(self, e):
+        if (got := self._file_at(e)) is not None:
+            self._insert(ServiceItem(KIND_CUSTOM, got[1]))
 
     def _select_file(self, stem: str):
         self.selected_file = stem
-        for s, b in self.file_buttons.items():
-            sel = s == stem
-            b.configure(fg_color=ACCENT if sel else "transparent", text_color="#FFFFFF" if sel else TEXT)
+        lb = self.file_listbox
+        lb.selection_clear(0, "end")
+        if stem in self._shown_files:
+            lb.selection_set(self._shown_files.index(stem))
 
     def _add_selected_file(self):
         if not self.selected_file:
@@ -673,11 +716,15 @@ class App(ctk.CTk):
     def _set_today(self):
         self._set_date(dt.date.today())
 
+    def _on_appearance_change(self, _mode: str):
+        """일반 tk 위젯(순서 행·템플릿 목록)은 CTk 처럼 색이 자동으로 바뀌지 않으므로 다시 칠한다.
+        CTk 가 콜백 목록을 도는 중이라 위젯 파괴(콜백 제거)는 다음 루프에서."""
+        self.after_idle(lambda: (self._style_file_listbox(), self._render_list()))
+
     def _set_mode(self, label: str):
         mode = MODES[label]
         ctk.set_appearance_mode(mode)
         self.cfg.set("appearance_mode", None, mode)
-        self.after(50, self._render_files)  # 선택 강조색 갱신
 
     def _open_settings(self):
         if SettingsDialog(self, self.cfg).show():

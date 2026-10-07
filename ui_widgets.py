@@ -83,6 +83,19 @@ def _pick(color: tuple[str, str]) -> str:
     return color[1] if _is_dark() else color[0]
 
 
+mode_color = _pick  # (라이트, 다크) 색 중 현재 모드 색 — 일반 tk 위젯용
+
+
+def scaled(widget: tk.Misc, value: float) -> int:
+    """CTk 논리 크기 → 실제 픽셀 (일반 tk 위젯은 CTk 처럼 배율을 자동 적용하지 않음)."""
+    return round(value * ctk.ScalingTracker.get_widget_scaling(widget))
+
+
+def tk_font(widget: tk.Misc, size: int = 13, weight: str = "normal") -> tuple:
+    """일반 tk 위젯용 글꼴 — CTk 위젯의 font(size) 와 같은 크기(음수 = 픽셀)."""
+    return (FONT_FAMILY, -scaled(widget, size), weight)
+
+
 class _Modal(ctk.CTkFrame):
     """메인 창 안에 뜨는 모달 다이얼로그 (Win11 ContentDialog 스타일).
 
@@ -730,6 +743,7 @@ class DragController:
     """마우스 이벤트 기반 드래그&드롭 (tkinter 는 위젯 간 DnD 를 기본 제공하지 않음).
 
     attach(widget, payload, text) 로 드래그 소스를 등록한다.
+    payload 가 함수면 누를 때 event 로 (payload, text) 를 구한다 (목록 상자처럼 한 위젯에 항목이 여럿일 때). None 이면 무시.
     - 6px 이상 움직이면 드래그 시작 → 반투명 고스트 라벨이 커서를 따라감
     - on_hover(x_root, y_root, payload) : 드래그 중 호출 (드롭 위치 표시/자동 스크롤)
     - on_drop(x_root, y_root, payload)  : 놓았을 때
@@ -749,8 +763,13 @@ class DragController:
         self._text = ""
         self._ghost: tk.Toplevel | None = None
 
-    def attach(self, widget, payload, text: str):
-        widget.bind("<ButtonPress-1>", lambda e: self._press(e, payload, text), add="+")
+    def attach(self, widget, payload, text: str = ""):
+        def press(e):
+            if not callable(payload):
+                self._press(e, payload, text)
+            elif (got := payload(e)) is not None:
+                self._press(e, *got)
+        widget.bind("<ButtonPress-1>", press, add="+")
         widget.bind("<B1-Motion>", self._motion, add="+")
         widget.bind("<ButtonRelease-1>", self._release, add="+")
 
