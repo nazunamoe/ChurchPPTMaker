@@ -56,18 +56,25 @@ Python이 없는 교회 컴퓨터에서도 쓸 수 있도록 하나의 `.exe` �
 cd ChurchPPTMaker
 .\build.bat           # 처음 실행 시 .venv 가상환경 생성 → 패키지 설치 → exe 빌드
 .\build.bat -Clean    # build\, dist\ 를 지우고 새로 빌드
+.\build.bat -Version 1.2.0   # 버전을 1.2.0 으로 올린 뒤 빌드
 ```
+
+**버전 관리**: 버전은 `version.py` 의 `__version__` 한 곳에서 관리합니다. 화면 제목(`… v1.2.0`)과
+exe 파일 속성(탐색기 [속성] → [자세히]의 파일/제품 버전)에 같은 값이 들어갑니다.
+`-Version` 을 주면 `version.py` 를 고친 뒤 빌드하고, 생략하면 현재 버전 그대로 빌드합니다. 형식은 `주.부.수정`(예: `1.2.0`).
 
 `build.bat`은 실행 정책과 관계없이 `build.ps1`을 실행하며, `build.ps1`은 다음을 자동으로 처리합니다.
 1. 프로그램 폴더에 `.venv` 가상환경 생성 (이미 있으면 재사용)
 2. `requirements-build.txt` 설치 (실행 패키지 + PyInstaller)
-3. PyInstaller로 단일 exe 빌드
+3. `version.py` 로 exe 버전 정보 파일(`build\version_info.txt`) 생성
+4. PyInstaller로 단일 exe 빌드
 
 직접 빌드하려면:
 
 ```powershell
 pip install -r requirements-build.txt
-pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --collect-data customtkinter main.py
+python version.py --write-info build\version_info.txt
+pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --version-file build\version_info.txt --collect-data customtkinter main.py
 ```
 
 - 결과물: `dist\ChurchPPTMaker.exe` (약 14MB)
@@ -290,6 +297,7 @@ ChurchPPTMaker/
 ├─ requirements.txt    필요한 Python 패키지
 ├─ requirements-build.txt  빌드용 패키지 (requirements.txt + PyInstaller)
 ├─ build.bat / build.ps1   exe 빌드 스크립트
+├─ version.py              프로그램 버전 (화면 제목·exe 속성)
 ├─ assets/app.ico         프로그램 아이콘
 └─ CLAUDE.md           개발용 상세 문서 (구조·규칙·개발 히스토리)
 ```

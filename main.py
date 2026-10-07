@@ -1,4 +1,4 @@
-"""예배 순서 PPT 제작 프로그램 v1.0 — 메인 윈도우.
+"""예배 순서 PPT 제작 프로그램 — 메인 윈도우. (버전은 version.py)
 
 레이아웃은 UI 초안 기준 (CLAUDE.md §4 참고).
 """
@@ -23,9 +23,10 @@ from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS
                         TEXT2, BibleField, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog,
                         accent_button, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
+from version import APP_NAME, __version__
 from worship_builder import BuildError, BuildRequest, WorshipBuilder, list_ccm_files, list_ppt_files, output_filename
 
-APP_TITLE = "예배 순서 PPT 제작 프로그램 v1.0"
+APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
 MODES = {"라이트": "Light", "다크": "Dark", "시스템": "System"}
 MIN_FILE_ROWS = 4  # 최소 창 크기에서도 템플릿 파일 목록이 이만큼은 보이도록

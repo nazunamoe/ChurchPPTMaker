@@ -15,6 +15,9 @@
 - **Bible2PPT** (https://github.com/nazunamoe/Bible2PPT) — 외부 실행 파일을 CLI로 호출
 - 실행: `pip install -r requirements.txt` → `python main.py`
 - 빌드: `build.bat` (→ `build.ps1`: `.venv` 생성 → `requirements-build.txt` 설치 → PyInstaller `--onefile --windowed --collect-data customtkinter`) → `dist\ChurchPPTMaker.exe`
+  - **버전**: `version.py` 의 `__version__`(주.부.수정)이 유일한 기준. `main.APP_TITLE` 이 `APP_NAME v버전` 으로 표시하고,
+    `build.ps1` 이 `python version.py --write-info build\version_info.txt` → PyInstaller `--version-file` 로 exe 파일/제품 버전에 반영.
+    `build.bat -Version 1.2.0` 은 `version.py --set` 으로 파일을 고친 뒤 빌드. 버전을 화면·문서에 하드코딩하지 말 것.
   - `build.ps1` 은 **UTF-8 BOM + CRLF** 로 유지 (Windows PowerShell 5.1 은 BOM 없는 파일을 ANSI로 읽어 한글이 깨짐).
   - 패키징 시 `config_manager` 가 `sys.frozen` 을 보고 exe 폴더를 프로그램 폴더로 사용.
   - 아이콘: `--icon assets/app.ico`(exe) + `--add-data assets/app.ico;assets`(창). `main.ICON_PATH` 는 `sys._MEIPASS` 기준.
@@ -27,7 +30,8 @@ ChurchPPTMaker/
 ├─ CLAUDE.md           이 문서
 ├─ README.md           사용자용 소개·빌드·사용 방법 (기능/설정이 바뀌면 함께 갱신)
 ├─ requirements.txt    실행 패키지 / requirements-build.txt  빌드용(+PyInstaller)
-├─ build.bat, build.ps1  exe 빌드 스크립트 (.venv 자동 생성)
+├─ build.bat, build.ps1  exe 빌드 스크립트 (.venv 자동 생성, -Version 으로 버전 변경)
+├─ version.py          프로그램 버전·이름 (화면 제목과 exe 버전 정보의 기준)
 ├─ assets/app.ico     프로그램 아이콘 (창·작업 표시줄·exe, 16~256px 다중 크기)
 ├─ main.py             진입점 + 메인 윈도우(App), 패널 구성, 드래그&드롭, 프리셋/생성 이벤트
 ├─ ui_widgets.py       재사용 위젯: 공통 색/폰트, _Modal(창 내부 오버레이 다이얼로그), CalendarPopup, ItemDialog,
@@ -50,7 +54,7 @@ ChurchPPTMaker/
 ## 4. UI 레이아웃 (최초 UI 초안 기준)
 초안의 단일 창 구조를 **우측 "순서" 패널**로 그대로 옮기고, 추가 요구사항(폴더/파일/성경 폼)을 좌측 패널로 확장했다.
 ```
-┌ 예배 순서 PPT 제작 프로그램 v1.0 ───────────────── [라이트|다크|시스템] [⚙ 설정] ┐
+┌ 예배 순서 PPT 제작 프로그램 v1.0.0 ─────────────── [라이트|다크|시스템] [⚙ 설정] ┐
 │ 교회 이름 [________]  날짜 [YYYY-MM-DD][📅][금일 지정]  예배 종류 [________]     │
 ├ 좌측 패널 ──────────────┬ 우측 패널 "순서" (초안 그대로) ─────────────────────┤
 │                         │ 순서 (N개)   [파일 불러오기][파일 내보내기][전체 비우기] │
