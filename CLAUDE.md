@@ -31,6 +31,7 @@ ChurchPPTMaker/
 ├─ assets/app.ico     프로그램 아이콘 (창·작업 표시줄·exe, 16~256px 다중 크기)
 ├─ main.py             진입점 + 메인 윈도우(App), 패널 구성, 드래그&드롭, 프리셋/생성 이벤트
 ├─ ui_widgets.py       재사용 위젯: 공통 색/폰트, _Modal(창 내부 오버레이 다이얼로그), CalendarPopup, ItemDialog,
+│                      BiblePicker(역본 검색 창)/BibleField(입력칸+🔍),
 │                      SettingsDialog, LogDialog, DragController, 스레드→UI 큐(post_to_ui/run_in_thread)
 ├─ models.py           ServiceItem 데이터 모델 + 항목 종류(KIND_*) 정의, 입력 검증
 ├─ config_manager.py   config.json / presets.json 읽기·쓰기, 기본값 병합, 프리셋 규칙 검증
@@ -106,6 +107,9 @@ Bible2PPT.exe <성경 구절...> [옵션]
 - 역본은 항목별(`options.bible`) → 없으면 설정 기본값 → 없으면 Bible2PPT 마지막 선택값.
 - `--list-bibles` 출력(포크 `CommandLine.cs` 확인): 헤더 `ID\t소스\t성경` + 줄마다 `ID\t소스\t이름`, 리다이렉트 시 UTF-8.
   소스별 실패는 stderr 로만 알림(종료 코드 0). → `parse_bible_list` 가 `이름 · 소스 [ID]` 로 표시, `bible_arg` 가 `[ID]` 를 `-b` 로 전달.
+- 역본 선택은 모두 `BibleField`(직접 입력 + 🔍 → `BiblePicker`): 메인 성경 영역, 말씀 항목 입력, 설정 기본 역본.
+  역본이 수백 개(YouVersion 10개 언어만 약 180개)라 드롭다운 대신 검색 창. 검색 로직은 `bible_bridge.filter_bibles`
+  (공백 구분 AND, 이름·소스·ID, 대소문자/공백 무시, 초성 `ㄱㅇㄱㅈ`, 이름 접두 일치 우선). 목록은 tk.Listbox (CTk 위젯 수백 개는 느림).
 - 역본 목록은 `config.bible2ppt.bible_list` 에 캐시. 설정에서 exe 지정(찾기/입력 후 포커스 이동) 시 즉시 불러오고,
   시작 시에는 exe 가 있고 캐시가 비었을 때만 조용히 불러옴(매 실행마다 Bible2PPT·PowerPoint 를 띄우지 않기 위함).
 - 원본 Bible2PPT 2.0.4(GUI 전용)는 인자를 무시하고 창을 띄운 채 멈춘다(실측: 180초 타임아웃).
@@ -158,6 +162,9 @@ Bible2PPT.exe <성경 구절...> [옵션]
 - CTk 의 `place(x=, y=)` 는 좌표에 배율을 곱한다 → 실제 픽셀 좌표는 `ScalingTracker.get_widget_scaling` 으로 나눠 전달.
 - 폰트는 `ui_widgets.font()` 캐시만 사용 (렌더링마다 CTkFont 생성 금지).
 - 작업 스레드에서 tkinter 호출 금지 → `post_to_ui()` / `run_in_thread()`.
+- `_Modal` 은 중첩 가능(예: 항목 입력 → 역본 검색). Esc/Enter 는 창 단위 바인딩이라 `_Modal._stack` 맨 위만 반응하고,
+  닫힐 때 아래 다이얼로그 grab 을 복구한다. 바인딩 해제는 `_unbind()` 사용 — Python 3.12 이하 `Misc.unbind(seq, funcid)` 는
+  seq 의 바인딩을 **전부** 지워 아래 다이얼로그의 Esc/Enter 가 사라진다.
 - `PptEngine` 은 내부에서 CoInitialize/CoUninitialize 하므로 반드시 작업 스레드에서 `with` 로 사용.
 
 ## 12. 작업 규칙

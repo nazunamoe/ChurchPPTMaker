@@ -67,6 +67,80 @@ def parse_bible_list(stdout: str) -> list[str]:
     return result
 
 
+_ENTRY_RE = re.compile(r"^(?P<name>.*?)(?: · (?P<source>.*?))? \[(?P<id>[^\[\]]+)\]$")
+
+
+def split_bible(entry: str) -> tuple[str, str, str]:
+    """표시 문자열 → (이름, 소스, ID). 형식이 아니면 (entry, '', '')."""
+    m = _ENTRY_RE.match(entry.strip())
+    if not m:
+        return entry.strip(), "", ""
+    return m.group("name"), m.group("source") or "", m.group("id")
+
+
+def short_source(source: str) -> str:
+    """'갓피아 성경' → '갓피아' (소스 필터 버튼용)."""
+    return re.sub(r"\s*성경$", "", source.strip())
+
+
+def bible_sources(entries: list[str]) -> list[str]:
+    """목록에 나온 순서대로 소스 이름(짧은 형태) 목록."""
+    seen: dict[str, None] = {}
+    for e in entries:
+        src = short_source(split_bible(e)[1])
+        if src:
+            seen.setdefault(src)
+    return list(seen)
+
+
+_CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ"
+
+
+def _char_eq(q: str, t: str) -> bool:
+    """검색 글자 q 가 대상 글자 t 와 같거나, q 가 초성이고 t 의 초성과 같으면 일치."""
+    if q == t:
+        return True
+    if q in _CHO and "가" <= t <= "힣":
+        return _CHO[(ord(t) - 0xAC00) // 588] == q
+    return False
+
+
+def _contains(text: str, token: str) -> bool:
+    n, m = len(text), len(token)
+    return any(all(_char_eq(token[j], text[i + j]) for j in range(m)) for i in range(n - m + 1))
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", "", s).lower()
+
+
+def filter_bibles(entries: list[str], query: str = "", source: str | None = None) -> list[str]:
+    """역본 검색. 공백으로 나눈 검색어가 모두 이름·소스·ID 중 하나에 포함되면 일치 (대소문자·공백 무시, 초성 검색 가능).
+    정렬: 이름이 검색어로 시작 → 이름에 포함 → 그 외(소스/ID 일치), 같은 순위는 원래 순서."""
+    tokens = [_norm(t) for t in query.split() if t.strip()]
+    ranked = []
+    for idx, e in enumerate(entries):
+        name, src, bid = split_bible(e)
+        if source and short_source(src) != source:
+            continue
+        fields = [_norm(name), _norm(src), _norm(bid)]
+        if not all(any(_contains(f, t) for f in fields) for t in tokens):
+            continue
+        rank = 0
+        if tokens:
+            first = tokens[0]
+            nm = fields[0]
+            if nm.startswith(first) or (len(nm) >= len(first) and all(_char_eq(first[j], nm[j]) for j in range(len(first)))):
+                rank = 0
+            elif _contains(nm, first):
+                rank = 1
+            else:
+                rank = 2
+        ranked.append((rank, idx, e))
+    ranked.sort()
+    return [e for _, _, e in ranked]
+
+
 def bible_arg(entry: str) -> str:
     """역본 표시 문자열에서 -b 에 넘길 값 추출.
     '개역개정 · 갓피아 [12]' → '12', 'ID\\t소스\\t이름' 원본 줄 → ID, 그 외에는 이름으로 간주."""

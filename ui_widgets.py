@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 import customtkinter as ctk
 
-from bible_bridge import Bible2PPT
+from bible_bridge import Bible2PPT, bible_sources, filter_bibles, short_source, split_bible
 from models import KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, ServiceItem, make_item, validate_item
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
@@ -88,21 +88,32 @@ class _Modal(ctk.CTkFrame):
     해제되지 않는 bind_all 을 수행하는데, 반복 생성·파괴 시 Tk 접근 위반 크래시가 재현되었다.
     다이얼로그에 grab 을 걸어 바깥 위젯 클릭을 막고, 메인 화면은 뒤에 그대로 보이게 한다.
     사용: result = SomeDialog(app, ...).show()   (닫힐 때까지 대기)
+
+    다이얼로그 위에 다이얼로그를 띄울 수 있다(예: 항목 입력 → 역본 검색). Esc/Enter 는 창 단위로 바인딩되므로
+    맨 위 다이얼로그만 반응하도록 _stack 으로 확인하고, 닫힐 때 아래 다이얼로그의 grab 을 되돌린다.
     """
+    _stack: list["_Modal"] = []
 
     def __init__(self, master, title: str):
         self._win = master.winfo_toplevel()
         super().__init__(self._win, corner_radius=12, fg_color=BG, border_width=2, border_color=PILL_BORDER)
         self.result: Any = None
         self._closing = False
+        self._prev_grab = None
         ctk.CTkLabel(self, text=title, font=font(16, "bold"), text_color=TEXT, anchor="w").pack(
             fill="x", padx=20, pady=(16, 0))
-        self._keys = [("<Escape>", self._win.bind("<Escape>", lambda e: self.destroy(), add="+"))]
+        self._keys = [("<Escape>", self._win.bind("<Escape>", lambda e: self._if_top(self.destroy), add="+"))]
+
+    def _if_top(self, fn):
+        if _Modal._stack and _Modal._stack[-1] is self:
+            return fn()
 
     def show(self):
         self.place(relx=0.5, rely=0.45, anchor="center")
         self.lift()
         self.update_idletasks()
+        self._prev_grab = self.grab_current()
+        _Modal._stack.append(self)
         try:
             self.grab_set()  # 다이얼로그 바깥 위젯 클릭 차단
         except tk.TclError:
@@ -112,7 +123,7 @@ class _Modal(ctk.CTkFrame):
         return self.result
 
     def bind_return(self, fn):
-        self._keys.append(("<Return>", self._win.bind("<Return>", lambda e: fn(), add="+")))
+        self._keys.append(("<Return>", self._win.bind("<Return>", lambda e: self._if_top(fn), add="+")))
 
     def on_shown(self):
         pass
@@ -121,16 +132,34 @@ class _Modal(ctk.CTkFrame):
         if self._closing:
             return
         self._closing = True
+        if self in _Modal._stack:
+            _Modal._stack.remove(self)
         for seq, funcid in self._keys:
-            try:
-                self._win.unbind(seq, funcid)
-            except tk.TclError:
-                pass
+            _unbind(self._win, seq, funcid)
         try:
             self.grab_release()
         except tk.TclError:
             pass
+        prev = self._prev_grab
         super().destroy()
+        if prev is not None:
+            try:
+                if prev.winfo_exists():
+                    prev.grab_set()  # 아래 다이얼로그로 grab 복귀
+            except tk.TclError:
+                pass
+
+
+def _unbind(widget: tk.Misc, seq: str, funcid: str) -> None:
+    """seq 에 묶인 여러 콜백 중 funcid 하나만 해제.
+    (Python 3.12 이하의 Misc.unbind(seq, funcid) 는 seq 의 바인딩을 전부 지워 아래 다이얼로그의 Esc/Enter 까지 사라짐)"""
+    try:
+        script = widget.tk.call("bind", widget._w, seq) or ""
+        keep = "\n".join(line for line in str(script).split("\n") if funcid not in line)
+        widget.tk.call("bind", widget._w, seq, keep)
+        widget.deletecommand(funcid)
+    except tk.TclError:
+        pass
 
 
 # ---------------------------------------------------------------- 달력 팝업
@@ -232,6 +261,155 @@ class CalendarPopup(ctk.CTkFrame):
                               command=lambda d=d: self._pick(d)).grid(row=r, column=c, padx=1, pady=1)
 
 
+# ---------------------------------------------------------------- 성경 역본 검색
+class BiblePicker(_Modal):
+    """성경 역본 검색·선택 (이름·약어·ID, 초성 검색, 소스 필터, ↑↓/Enter).
+    show() → 선택한 표시 문자열 / '' (기본값 사용) / None (취소).
+    역본이 수백 개라 CTk 위젯 대신 tk.Listbox 로 그린다 (CTkButton 수백 개는 그리는 데 수 초 걸림)."""
+    MAX_ROWS = 500
+
+    def __init__(self, master, values: list[str], current: str = "", clear_text: str | None = "기본값 사용"):
+        super().__init__(master, "성경 역본 선택")
+        self.values = list(values)
+        self._shown: list[str] = []
+        self._source: str | None = None
+        self._job = None
+
+        body = card(self)
+        body.pack(fill="both", expand=True, padx=16, pady=(12, 8))
+        self.search = ctk.CTkEntry(body, width=480, height=34, font=font(13),
+                                   placeholder_text="이름 · 약어 · ID 검색   (초성 가능: ㄱㅇㄱㅈ → 개역개정)")
+        self.search.pack(fill="x", padx=14, pady=(14, 8))
+        sources = bible_sources(self.values)
+        if len(sources) > 1:
+            seg = ctk.CTkSegmentedButton(body, values=["전체", *sources], font=font(12), command=self._on_source)
+            seg.set("전체")
+            seg.pack(anchor="w", padx=14, pady=(0, 8))
+
+        box = ctk.CTkFrame(body, fg_color=SUBTLE, corner_radius=8, border_width=1, border_color=BORDER)
+        box.pack(fill="both", expand=True, padx=14)
+        self.listbox = tk.Listbox(box, height=12, width=60, activestyle="none", borderwidth=0, highlightthickness=0,
+                                  exportselection=False, font=(FONT_FAMILY, 11), bg=_pick(SUBTLE), fg=_pick(TEXT),
+                                  selectbackground=_pick(ACCENT), selectforeground="#FFFFFF")
+        sb = ctk.CTkScrollbar(box, command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=sb.set)
+        self.listbox.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=8)
+        sb.pack(side="right", fill="y", padx=2, pady=6)
+        self.count = ctk.CTkLabel(body, text="", font=font(11), text_color=TEXT2, anchor="w")
+        self.count.pack(fill="x", padx=14, pady=(4, 10))
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.pack(fill="x", padx=16, pady=(4, 16))
+        if clear_text:
+            secondary_button(btns, clear_text, self._clear, width=110).pack(side="left")
+        accent_button(btns, "선택", self._ok, width=96).pack(side="right")
+        secondary_button(btns, "취소", self.destroy, width=96).pack(side="right", padx=8)
+
+        self.search.bind("<KeyRelease>", self._on_key)
+        self.search.bind("<Down>", lambda e: self._move(1))
+        self.search.bind("<Up>", lambda e: self._move(-1))
+        self.search.bind("<Next>", lambda e: self._move(10))
+        self.search.bind("<Prior>", lambda e: self._move(-10))
+        self.listbox.bind("<Double-Button-1>", lambda e: self._ok())
+        self.bind_return(self._ok)
+
+        current = current.strip()
+        if current and current not in self.values:  # 직접 입력한 이름이면 그걸로 검색해 보여 줌
+            self.search.insert(0, current)
+        self._refresh(select=current)
+
+    def on_shown(self):
+        self.search.focus_set()
+
+    def _on_key(self, event):
+        if event.keysym in ("Up", "Down", "Prior", "Next", "Return", "KP_Enter", "Escape"):
+            return
+        if self._job:
+            self.after_cancel(self._job)
+        self._job = self.after(120, self._refresh)  # 한글 조합 중 매 키마다 다시 그리지 않도록
+
+    def _on_source(self, value: str):
+        self._source = None if value == "전체" else value
+        self._refresh()
+
+    def _refresh(self, select: str | None = None):
+        self._job = None
+        matches = filter_bibles(self.values, self.search.get(), self._source)
+        self._shown = matches[:self.MAX_ROWS]
+        self.listbox.delete(0, "end")
+        for e in self._shown:
+            name, src, bid = split_bible(e)
+            self.listbox.insert("end", f"  {name}" + (f"      {short_source(src)} · {bid}" if bid else ""))
+        if not self.values:
+            text = "역본 목록이 없습니다. ↻ 로 먼저 불러오세요."
+        elif not matches:
+            text = "검색 결과가 없습니다."
+        else:
+            text = f"{len(matches)}개" + (f" (처음 {self.MAX_ROWS}개 표시)" if len(matches) > self.MAX_ROWS else "") \
+                   + f"  /  전체 {len(self.values)}개   ·   ↑↓ 이동, Enter 선택, 더블클릭 선택"
+        self.count.configure(text=text)
+        if self._shown:
+            self._select(self._shown.index(select) if select in self._shown else 0)
+
+    def _select(self, i: int):
+        self.listbox.selection_clear(0, "end")
+        self.listbox.selection_set(i)
+        self.listbox.activate(i)
+        self.listbox.see(i)
+
+    def _move(self, delta: int):
+        if self._shown:
+            cur = self.listbox.curselection()
+            i = (cur[0] + delta) if cur else 0
+            self._select(max(0, min(len(self._shown) - 1, i)))
+        return "break"
+
+    def _ok(self):
+        if self._job:  # 입력 직후 Enter → 검색 결과부터 반영
+            self.after_cancel(self._job)
+            self._refresh()
+        cur = self.listbox.curselection()
+        if not cur:
+            self.bell()
+            return
+        self.result = self._shown[cur[0]]
+        self.destroy()
+
+    def _clear(self):
+        self.result = ""
+        self.destroy()
+
+
+class BibleField(ctk.CTkFrame):
+    """역본 입력칸 + 🔍(역본 검색 창). 직접 입력도 가능 (이름만 입력하면 Bible2PPT 가 이름으로 찾음)."""
+
+    def __init__(self, master, values: list[str] | None = None, width: int = 260, placeholder: str = "",
+                 font_size: int = 13, clear_text: str | None = "기본값 사용"):
+        super().__init__(master, fg_color="transparent")
+        self.values = list(values or [])
+        self.clear_text = clear_text
+        self.entry = ctk.CTkEntry(self, width=width - 38, height=32, font=font(font_size), placeholder_text=placeholder)
+        self.entry.pack(side="left", fill="x", expand=True)
+        self.button = secondary_button(self, "🔍", self.open_picker, width=32)
+        self.button.pack(side="left", padx=(6, 0))
+
+    def get(self) -> str:
+        return self.entry.get()
+
+    def set(self, value: str):
+        self.entry.delete(0, "end")
+        if value:
+            self.entry.insert(0, value)
+
+    def set_values(self, values: list[str]):
+        self.values = list(values)
+
+    def open_picker(self):
+        res = BiblePicker(self, self.values, current=self.get(), clear_text=self.clear_text).show()
+        if res is not None:
+            self.set(res)
+
+
 # ---------------------------------------------------------------- 항목 입력 다이얼로그
 class ItemDialog(_Modal):
     """기도/찬송/말씀/사용자 지정 입력. 필수값 미입력 시 에러 창."""
@@ -275,8 +453,7 @@ class ItemDialog(_Modal):
 
         if kind == KIND_BIBLE:
             self._lbl(body, row, "성경 역본 (선택)")
-            self.bible_widget = ctk.CTkComboBox(body, width=260, values=bible_values or [], font=font(13),
-                                                dropdown_font=font(13))
+            self.bible_widget = BibleField(body, values=bible_values, width=260, placeholder="비우면 기본 역본")
             self.bible_widget.set(self.options.get("bible", default_bible))
             self.bible_widget.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
             row += 1
@@ -364,7 +541,8 @@ class SettingsDialog(_Modal):
         row("Bible2PPT.exe 경로", self.exe, self._browse_exe)
         self.exe.bind("<FocusOut>", lambda e: self._load_bibles_if_needed())
         self.exe.bind("<Return>", lambda e: self._load_bibles_if_needed())
-        self.bible = ctk.CTkComboBox(body, width=320, values=self.bible_values, font=font(13), dropdown_font=font(13))
+        self.bible = BibleField(body, values=self.bible_values, width=320, placeholder="비우면 Bible2PPT 마지막 선택값",
+                                clear_text="지정 안 함")
         self.bible.set(b.get("bible") or "")
         row("기본 성경 역본", self.bible, self._load_bibles, button_text="↻")
         self.bible_hint = ctk.CTkLabel(body, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left")
@@ -426,7 +604,7 @@ class SettingsDialog(_Modal):
             if self._exe() is None:
                 text = "Bible2PPT.exe 를 지정하면 사용할 수 있는 역본 목록을 불러옵니다."
             elif self.bible_values:
-                text = f"역본 {len(self.bible_values)}종 — 목록에서 고르거나 비워 두면 Bible2PPT 마지막 선택값을 사용합니다."
+                text = f"역본 {len(self.bible_values)}종 — 🔍 로 검색해 고르거나 비워 두면 Bible2PPT 마지막 선택값을 사용합니다."
             else:
                 text = "↻ 를 눌러 역본 목록을 불러오세요."
         self.bible_hint.configure(text=text, text_color=DANGER if error else TEXT2)
@@ -468,7 +646,7 @@ class SettingsDialog(_Modal):
             return
         self.bible_values = res
         self._loaded_for = exe
-        self.bible.configure(values=res)
+        self.bible.set_values(res)
         cur = self.bible.get().strip()
         if cur and cur not in res:  # 예전 형식(이름만 입력)이면 목록의 같은 이름 항목으로 맞춤
             match = next((v for v in res if v.startswith(f"{cur} · ") or v.startswith(f"{cur} [")), None)

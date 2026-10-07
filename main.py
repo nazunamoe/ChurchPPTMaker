@@ -18,8 +18,8 @@ from config_manager import MAX_PRESETS, ConfigManager, PresetManager
 from models import (KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, ServiceItem, make_item,
                     validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
-                        TEXT2, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog, accent_button, card,
-                        font, post_to_ui, pump_ui_queue, run_in_thread, secondary_button)
+                        TEXT2, BibleField, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog,
+                        accent_button, card, font, post_to_ui, pump_ui_queue, run_in_thread, secondary_button)
 from worship_builder import BuildError, BuildRequest, WorshipBuilder, list_ppt_files, output_filename
 
 APP_TITLE = "예배 순서 PPT 제작 프로그램 v1.0"
@@ -196,11 +196,9 @@ class App(ctk.CTk):
         self.verse_entry.bind("<Return>", lambda e: self._add_bible_from_form())
         brow = ctk.CTkFrame(bc, fg_color="transparent")
         brow.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14)
-        default_bible = self.cfg.get("bible2ppt", "bible")
-        self.bible_combo = ctk.CTkComboBox(brow, height=32, font=font(12), dropdown_font=font(12),
-                                           values=self.bible_values or ([default_bible] if default_bible else []))
-        self.bible_combo.set(self.cfg.get("bible2ppt", "bible") or "")
-        self.bible_combo.pack(side="left", fill="x", expand=True)
+        self.bible_field = BibleField(brow, values=self.bible_values, width=200, font_size=12, placeholder="역본 (비우면 기본값)")
+        self.bible_field.set(self.cfg.get("bible2ppt", "bible") or "")
+        self.bible_field.pack(side="left", fill="x", expand=True)
         secondary_button(brow, "↻", self._load_bible_list, width=32).pack(side="left", padx=4)
         accent_button(brow, "순서에 추가", self._add_bible_from_form, width=96).pack(side="left")
         self.bible_status = ctk.CTkLabel(bc, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left")
@@ -388,7 +386,7 @@ class App(ctk.CTk):
 
     def _dialog(self, kind: str, item: ServiceItem | None = None) -> ServiceItem | None:
         return ItemDialog(self, kind, item, template_names=self._template_names(),
-                          bible_values=self.bible_values, default_bible=self.bible_combo.get().strip()).show()
+                          bible_values=self.bible_values, default_bible=self.bible_field.get().strip()).show()
 
     def _prompt_new(self, kind: str, idx: int):
         item = self._dialog(kind)
@@ -488,7 +486,7 @@ class App(ctk.CTk):
         except ValueError as e:
             messagebox.showerror("입력 오류", str(e), parent=self)
             return
-        bible = self.bible_combo.get().strip()
+        bible = self.bible_field.get().strip()
         item = make_item(KIND_BIBLE, "말씀", ", ".join(refs), {"bible": bible} if bible else {})
         self._insert(item)
         self.verse_entry.delete(0, "end")
@@ -515,12 +513,12 @@ class App(ctk.CTk):
 
     def _set_bible_values(self, values: list[str]):
         self.bible_values = values
-        self.bible_combo.configure(values=values)
-        cur = self.bible_combo.get().strip()
+        self.bible_field.set_values(values)
+        cur = self.bible_field.get().strip()
         if not cur or cur not in values:  # 비었거나 예전 형식이면 설정의 기본 역본으로 맞춤
             default = self.cfg.get("bible2ppt", "bible") or ""
             if not cur or default in values:
-                self.bible_combo.set(default)
+                self.bible_field.set(default)
 
     def _load_bible_list_if_needed(self):
         """exe 는 있는데 캐시된 역본 목록이 없으면 (예: 첫 실행·이전 버전 설정) 조용히 불러온다."""
@@ -584,8 +582,8 @@ class App(ctk.CTk):
     def _open_settings(self):
         if SettingsDialog(self, self.cfg).show():
             self._set_bible_values(list(self.cfg.get("bible2ppt", "bible_list") or []))
-            if not self.bible_combo.get().strip():
-                self.bible_combo.set(self.cfg.get("bible2ppt", "bible") or "")
+            if not self.bible_field.get().strip():
+                self.bible_field.set(self.cfg.get("bible2ppt", "bible") or "")
             self._update_bible_status()
             self._load_bible_list_if_needed()  # exe 를 바꿨는데 설정 창에서 목록을 못 받았으면 다시 시도
             self._set_status("설정을 저장했습니다.")
