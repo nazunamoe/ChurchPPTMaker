@@ -17,7 +17,7 @@ import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, Bible2PPTError, parse_references
 from config_manager import MAX_PRESETS, ConfigManager, PresetManager, save_worship_to_text, load_worship_from_text
-from models import (KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, ServiceItem, make_item,
+from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, ServiceItem, make_item,
                     validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
                         TEXT2, BibleField, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog,
@@ -25,7 +25,7 @@ from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
 from worship_builder import (BuildError, BuildRequest, WorshipBuilder, list_ccm_files, list_ppt_files, output_filename,
-                             prayer_template_names, sermon_template)
+                             prayer_template_names, sermon_template, validate_filename_format)
 
 APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
@@ -233,30 +233,87 @@ class App(ctk.CTk):
     def _build_info_bar(self):
         bar = card(self._content)
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
+        # 줄 틀은 카드 색으로 칠해지므로 둥근 테두리를 덮지 않도록 안쪽으로 들여 배치
+        line1 = ctk.CTkFrame(bar, fg_color="transparent")
+        line1.pack(fill="x", padx=10, pady=(8, 0))
+        line2 = ctk.CTkFrame(bar, fg_color="transparent")
+        line2.pack(fill="x", padx=10, pady=(0, 8))
 
-        def label(text):
-            return ctk.CTkLabel(bar, text=text, font=font(13, "bold"), text_color=TEXT)
+        def label(master, text):
+            return ctk.CTkLabel(master, text=text, font=font(13, "bold"), text_color=TEXT)
 
-        label("교회 이름").pack(side="left", padx=(18, 8), pady=14)
-        self.church_entry = ctk.CTkEntry(bar, width=230, height=34, font=font(13), placeholder_text="예: 사랑의교회")
+        def on_change(_=None):
+            self._update_filename_preview()
+            self._schedule_save()
+
+        label(line1, "교회 이름").pack(side="left", padx=(8, 8), pady=(6, 5))
+        self.church_entry = ctk.CTkEntry(line1, width=230, height=34, font=font(13), placeholder_text="예: 사랑의교회")
         self.church_entry.insert(0, self.cfg.get("church_name") or "")
         self.church_entry.pack(side="left")
-        self.church_entry.bind("<KeyRelease>", lambda e: self._schedule_save())
+        self.church_entry.bind("<KeyRelease>", on_change)
 
-        label("날짜").pack(side="left", padx=(28, 8))
-        self.date_entry = ctk.CTkEntry(bar, width=130, height=34, font=font(13), placeholder_text="YYYY-MM-DD")
+        label(line1, "날짜").pack(side="left", padx=(28, 8))
+        self.date_entry = ctk.CTkEntry(line1, width=130, height=34, font=font(13), placeholder_text="YYYY-MM-DD")
         self.date_entry.insert(0, dt.date.today().strftime(DATE_FMT))
         self.date_entry.pack(side="left")
-        self.cal_btn = secondary_button(bar, "📅", self._open_calendar, width=36)
+        self.date_entry.bind("<KeyRelease>", lambda e: self._update_filename_preview())
+        self.cal_btn = secondary_button(line1, "📅", self._open_calendar, width=36)
         self.cal_btn.configure(height=34)
         self.cal_btn.pack(side="left", padx=(4, 4))
-        secondary_button(bar, "금일 지정", self._set_today, width=80).pack(side="left")
+        secondary_button(line1, "금일 지정", self._set_today, width=80).pack(side="left")
 
-        label("예배 종류").pack(side="left", padx=(28, 8))
-        self.worship_entry = ctk.CTkEntry(bar, width=170, height=34, font=font(13), placeholder_text="예: 주일오전예배")
+        label(line1, "예배 종류").pack(side="left", padx=(28, 8))
+        self.worship_entry = ctk.CTkEntry(line1, width=170, height=34, font=font(13), placeholder_text="예: 주일오전예배")
         self.worship_entry.insert(0, self.cfg.get("worship_type") or "")
-        self.worship_entry.pack(side="left", padx=(0, 18))
-        self.worship_entry.bind("<KeyRelease>", lambda e: self._schedule_save())
+        self.worship_entry.pack(side="left", padx=(0, 8))
+        self.worship_entry.bind("<KeyRelease>", on_change)
+
+        # 결과 파일 이름 형식: {항목} 자리에 값이 들어감. 프리셋을 저장하면 함께 저장되고, 불러오면 프리셋의 형식으로 바뀜
+        label(line2, "파일 이름").pack(side="left", padx=(8, 8), pady=(5, 6))
+        self.format_entry = ctk.CTkEntry(line2, width=300, height=34, font=font(13),
+                                         placeholder_text=DEFAULT_FILENAME_FORMAT)
+        self.format_entry.insert(0, self.cfg.get("filename_format") or DEFAULT_FILENAME_FORMAT)
+        self.format_entry.pack(side="left")
+        self.format_entry.bind("<KeyRelease>", on_change)
+        self.format_menu_btn = secondary_button(line2, "항목 ▾", self._open_format_menu, width=64)
+        self.format_menu_btn.configure(height=34)
+        self.format_menu_btn.pack(side="left", padx=(4, 4))
+        b = secondary_button(line2, "기본값", lambda: self._set_filename_format(DEFAULT_FILENAME_FORMAT), width=64)
+        b.configure(height=34)
+        b.pack(side="left")
+        self.filename_preview = ctk.CTkLabel(line2, text="", font=font(12), text_color=TEXT2, anchor="w")
+        self.filename_preview.pack(side="left", fill="x", expand=True, padx=(12, 8))
+        self._update_filename_preview()
+
+    def _open_format_menu(self):
+        """[항목 ▾] → 커서 위치에 {항목} 넣기 (사용할 수 있는 항목 안내도 겸함)."""
+        menu = tk.Menu(self, tearoff=0, font=tk_font(self, 12))
+        for f in FILENAME_FIELDS:
+            menu.add_command(label=f"{{{f}}}", command=lambda f=f: self._insert_format_field(f))
+        btn = self.format_menu_btn
+        menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+
+    def _insert_format_field(self, field: str):
+        self.format_entry.insert("insert", f"{{{field}}}")
+        self.format_entry.focus_set()
+        self._update_filename_preview()
+        self._schedule_save()
+
+    def _set_filename_format(self, fmt: str):
+        self.format_entry.delete(0, "end")
+        self.format_entry.insert(0, fmt)
+        self._update_filename_preview()
+        self._schedule_save()
+
+    def _update_filename_preview(self):
+        fmt = self.format_entry.get().strip()
+        err = validate_filename_format(fmt)
+        if err:
+            self.filename_preview.configure(text="⚠ " + err.splitlines()[0], text_color=DANGER)
+            return
+        name = output_filename(self.date_entry.get().strip(), self.church_entry.get().strip(),
+                               self.worship_entry.get().strip(), fmt)
+        self.filename_preview.configure(text=f"→  {name}", text_color=TEXT2)
 
     # ================================================================ 본문
     def _build_body(self):
@@ -812,6 +869,7 @@ class App(ctk.CTk):
     def _set_date(self, d: dt.date):
         self.date_entry.delete(0, "end")
         self.date_entry.insert(0, d.strftime(DATE_FMT))
+        self._update_filename_preview()
 
     def _set_today(self):
         self._set_date(dt.date.today())
@@ -854,7 +912,8 @@ class App(ctk.CTk):
     def _save_basic(self):
         self._save_job = None
         self.cfg.set("church_name", None, self.church_entry.get().strip(), save=False)
-        self.cfg.set("worship_type", None, self.worship_entry.get().strip())
+        self.cfg.set("worship_type", None, self.worship_entry.get().strip(), save=False)
+        self.cfg.set("filename_format", None, self.format_entry.get().strip())
 
     # ================================================================ 프리셋
     def _refresh_presets(self):
@@ -869,6 +928,11 @@ class App(ctk.CTk):
         if not self.items:
             messagebox.showerror("프리셋 저장", "저장할 예배 순서가 없습니다.", parent=self)
             return
+        fmt = self.format_entry.get().strip()
+        err = validate_filename_format(fmt)
+        if err:
+            messagebox.showerror("프리셋 저장", err, parent=self)
+            return
         if self.presets.exists(name):
             if not messagebox.askyesno("프리셋 저장", f"'{name}' 프리셋이 이미 있습니다. 덮어쓸까요?", parent=self):
                 return
@@ -876,7 +940,7 @@ class App(ctk.CTk):
             messagebox.showerror("프리셋 저장", f"프리셋은 최대 {MAX_PRESETS}개까지 저장할 수 있습니다.\n"
                                             "기존 프리셋을 삭제한 뒤 다시 시도해 주세요.", parent=self)
             return
-        self.presets.upsert(name, self.items)
+        self.presets.upsert(name, self.items, fmt)
         self._refresh_presets()
         self.preset_combo.set(name)
         self._set_status(f"프리셋 '{name}' 저장됨 ({len(self.presets.presets)}/{MAX_PRESETS})")
@@ -892,6 +956,7 @@ class App(ctk.CTk):
         self.items = self.presets.load(name)
         self.worship_entry.delete(0, "end")
         self.worship_entry.insert(0, name)
+        self._set_filename_format(self.presets.filename_format(name))
         self._save_basic()
         self._render_list()
         self._set_status(f"프리셋 '{name}' 불러옴")
@@ -940,6 +1005,10 @@ class App(ctk.CTk):
             if "날짜" in meta:
                 self.date_entry.delete(0, "end")
                 self.date_entry.insert(0, meta["날짜"])
+            if meta.get("파일이름형식") and not validate_filename_format(meta["파일이름형식"]):
+                self.format_entry.delete(0, "end")
+                self.format_entry.insert(0, meta["파일이름형식"])
+            self._update_filename_preview()
 
             self._save_basic()
             self._render_list()
@@ -968,6 +1037,7 @@ class App(ctk.CTk):
                 "church_name": self.church_entry.get().strip(),
                 "worship_type": self.worship_entry.get().strip(),
                 "date": self.date_entry.get().strip(),
+                "filename_format": self.format_entry.get().strip(),
             }
             save_worship_to_text(Path(path), self.items, meta)
             self._set_status(f"파일로 저장되었습니다: {Path(path).name}")
@@ -990,6 +1060,9 @@ class App(ctk.CTk):
             errors.append("날짜를 YYYY-MM-DD 형식으로 입력해 주세요.")
         if not worship:
             errors.append("예배 종류를 입력해 주세요.")
+        fmt = self.format_entry.get().strip()
+        if err := validate_filename_format(fmt):
+            errors.append(err)
         if not self.items:
             errors.append("예배 순서가 비어 있습니다.")
         for i, it in enumerate(self.items, 1):
@@ -1007,7 +1080,7 @@ class App(ctk.CTk):
         if problems:
             messagebox.showerror("파일을 찾을 수 없습니다", "\n".join(problems), parent=self)
             return
-        out = self.cfg.resolve_path("output_dir") / output_filename(date, church, worship)
+        out = self.cfg.resolve_path("output_dir") / output_filename(date, church, worship, fmt)
         if out.exists() and not messagebox.askyesno("덮어쓰기", f"이미 같은 이름의 파일이 있습니다.\n{out.name}\n\n덮어쓸까요?",
                                                      parent=self):
             return
@@ -1035,7 +1108,7 @@ class App(ctk.CTk):
             elif messagebox.askyesno("생성 완료", f"생성되었습니다.\n{result}\n\n폴더를 열까요?", parent=self):
                 os.startfile(result.parent)
 
-        run_in_thread(lambda: builder.build(BuildRequest(items, church, date, worship)), done)
+        run_in_thread(lambda: builder.build(BuildRequest(items, church, date, worship, fmt)), done)
 
     # ================================================================ 상태 / 로그
     def _set_status(self, text: str):

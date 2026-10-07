@@ -14,6 +14,10 @@ KIND_CCM = "ccm"         # CCM 폴더에서 검색해 고른 파일 (value = CCM
 
 MAX_FILL = 3             # 항목당 텍스트 입력칸 수 ({{내용1}} ~ {{내용3}})
 
+# 결과 파일 이름 형식 (프리셋별로 다르게 저장 가능). {항목} 자리에 값이 들어감 — worship_builder.output_filename
+FILENAME_FIELDS = ("날짜", "년", "월", "일", "교회이름", "예배종류")
+DEFAULT_FILENAME_FORMAT = "{날짜}_{교회이름}_{예배종류}"
+
 KIND_LABELS = {
     KIND_PRAYER: "기도",
     KIND_HYMN: "찬송",
@@ -142,12 +146,14 @@ def validate_item(item: ServiceItem) -> str | None:
     return None
 
 
-def export_to_text(items: list[ServiceItem], church_name: str = "", worship_type: str = "", date_str: str = "") -> str:
+def export_to_text(items: list[ServiceItem], church_name: str = "", worship_type: str = "", date_str: str = "",
+                   filename_format: str = "") -> str:
     """예배 순서를 텍스트 형식으로 변환."""
     lines = []
     if church_name: lines.append(f"# 교회이름: {church_name}")
     if worship_type: lines.append(f"# 예배종류: {worship_type}")
     if date_str: lines.append(f"# 날짜: {date_str}")
+    if filename_format: lines.append(f"# 파일이름형식: {filename_format}")
     lines.append("")
 
     for item in items:

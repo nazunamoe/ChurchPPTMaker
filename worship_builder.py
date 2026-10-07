@@ -10,7 +10,8 @@ from typing import Callable
 
 from bible_bridge import Bible2PPT, Bible2PPTError
 from config_manager import ConfigManager
-from models import KIND_BIBLE, KIND_CCM, KIND_HYMN, KIND_PRAYER, KIND_SERMON, ServiceItem, ccm_title, hymn_number
+from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_HYMN, KIND_PRAYER, KIND_SERMON,
+                    ServiceItem, ccm_title, hymn_number)
 from ppt_engine import MERGE_SOURCE_FORMATTING, MergeJob, PptEngine, PptEngineError
 
 PPT_EXTS = (".pptx", ".pptm", ".ppt")
@@ -31,9 +32,37 @@ def sanitize_filename(text: str) -> str:
     return f"_{text}" if _RESERVED.match(text) else text
 
 
-def output_filename(date: str, church: str, worship: str) -> str:
-    """[YYYY-MM-DD]_[교회이름]_[예배종류].pptx"""
-    return f"{sanitize_filename(date)}_{sanitize_filename(church)}_{sanitize_filename(worship)}.pptx"
+_FIELD_RE = re.compile(r"\{([^{}]*)\}")
+
+
+def validate_filename_format(fmt: str) -> str | None:
+    """파일 이름 형식 오류 메시지 (정상이면 None)."""
+    if not fmt.strip():
+        return "파일 이름 형식을 입력해 주세요."
+    unknown = [f"{{{f}}}" for f in _FIELD_RE.findall(fmt) if f not in FILENAME_FIELDS]
+    if unknown:
+        return (f"파일 이름 형식에 알 수 없는 항목이 있습니다: {' '.join(unknown)}\n"
+                f"사용할 수 있는 항목: {' '.join(f'{{{f}}}' for f in FILENAME_FIELDS)}")
+    if not output_stem(fmt, "2000-01-01", "교회", "예배"):  # 예: '///' 처럼 쓸 수 없는 문자뿐인 형식
+        return "파일 이름 형식으로 만든 이름이 비어 있습니다. 글자나 항목을 넣어 주세요."
+    return None
+
+
+def output_stem(fmt: str, date: str, church: str, worship: str) -> str:
+    """형식의 {항목}을 값으로 바꾼 파일 이름(확장자 제외). 전체를 sanitize 해 경로 구분자 등은 제거된다."""
+    y, m, d = date.split("-") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) else ("", "", "")
+    values = {"날짜": date, "년": y, "월": m, "일": d, "교회이름": church, "예배종류": worship}
+    name = _FIELD_RE.sub(lambda mo: values.get(mo.group(1), mo.group(0)), fmt).strip()
+    if name.lower().endswith(".pptx"):  # 확장자까지 적었으면 한 번만 붙도록
+        name = name[:-5]
+    return sanitize_filename(name)
+
+
+def output_filename(date: str, church: str, worship: str, fmt: str = DEFAULT_FILENAME_FORMAT) -> str:
+    """파일 이름 형식(기본 {날짜}_{교회이름}_{예배종류}) → 'YYYY-MM-DD_교회이름_예배종류.pptx'.
+    형식이 잘못돼 이름이 비면 기본 형식을 쓴다."""
+    stem = output_stem(fmt, date, church, worship) or output_stem(DEFAULT_FILENAME_FORMAT, date, church, worship)
+    return f"{stem}.pptx"
 
 
 def list_ppt_files(folder: Path, recursive: bool = False) -> list[Path]:
@@ -122,6 +151,7 @@ class BuildRequest:
     church: str
     date: str
     worship: str
+    filename_format: str = DEFAULT_FILENAME_FORMAT
 
 
 class WorshipBuilder:
@@ -188,7 +218,7 @@ class WorshipBuilder:
             raise BuildError("다음 항목을 처리할 수 없습니다:\n\n" + "\n".join(problems))
 
         out_dir = self.cfg.resolve_path("output_dir")
-        output = out_dir / output_filename(req.date, req.church, req.worship)
+        output = out_dir / output_filename(req.date, req.church, req.worship, req.filename_format)
         sources = {p.resolve() for p in paths if p is not None}
         if output.resolve() in sources:
             raise BuildError(f"결과 파일 경로가 원본 PPT 와 같아 원본을 덮어쓰게 됩니다:\n{output}\n"

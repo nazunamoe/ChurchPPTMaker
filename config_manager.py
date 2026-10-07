@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from models import KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER, KIND_SERMON, ServiceItem
+from models import DEFAULT_FILENAME_FORMAT, KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER, KIND_SERMON, ServiceItem
 
 MAX_PRESETS = 10
 MAX_PRESET_NAME = 10
@@ -25,6 +25,7 @@ PRESETS_PATH = app_dir() / "presets.json"
 DEFAULT_CONFIG: dict = {
     "church_name": "",
     "worship_type": "주일오전예배",
+    "filename_format": DEFAULT_FILENAME_FORMAT,  # 결과 파일 이름 형식 (프리셋을 불러오면 프리셋의 형식으로 바뀜)
     "appearance_mode": "System",
     "paths": {
         "template_dir": "templates",
@@ -170,7 +171,10 @@ def _clean_presets(raw: list) -> list[dict]:
             continue
         items = p.get("items") if isinstance(p.get("items"), list) else []
         seen.add(name)
-        out.append({"name": name, "items": [ServiceItem.from_dict(d).to_dict() for d in items if isinstance(d, dict)]})
+        entry = {"name": name, "items": [ServiceItem.from_dict(d).to_dict() for d in items if isinstance(d, dict)]}
+        if isinstance(p.get("filename_format"), str) and p["filename_format"].strip():
+            entry["filename_format"] = p["filename_format"]
+        out.append(entry)
     return out
 
 
@@ -203,8 +207,8 @@ class PresetManager:
     def can_add(self, name: str) -> bool:
         return self.exists(name) or len(self.presets) < MAX_PRESETS
 
-    def upsert(self, name: str, items: list[ServiceItem]) -> None:
-        entry = {"name": name, "items": [i.to_dict() for i in items]}
+    def upsert(self, name: str, items: list[ServiceItem], filename_format: str = DEFAULT_FILENAME_FORMAT) -> None:
+        entry = {"name": name, "items": [i.to_dict() for i in items], "filename_format": filename_format}
         for idx, p in enumerate(self.presets):
             if p["name"] == name:
                 self.presets[idx] = entry
@@ -221,6 +225,11 @@ class PresetManager:
                 return [ServiceItem.from_dict(d) for d in p.get("items", [])]
         raise KeyError(name)
 
+    def filename_format(self, name: str) -> str:
+        """프리셋의 결과 파일 이름 형식 (저장된 형식이 없는 예전 프리셋은 기본 형식)."""
+        p = next((p for p in self.presets if p["name"] == name), {})
+        return p.get("filename_format") or DEFAULT_FILENAME_FORMAT
+
     def delete(self, name: str) -> None:
         self.presets = [p for p in self.presets if p["name"] != name]
         self.save()
@@ -233,7 +242,8 @@ def save_worship_to_text(path: Path, items: list[ServiceItem], metadata: dict) -
         items,
         church_name=metadata.get("church_name", ""),
         worship_type=metadata.get("worship_type", ""),
-        date_str=metadata.get("date", "")
+        date_str=metadata.get("date", ""),
+        filename_format=metadata.get("filename_format", ""),
     )
     with open(path, "w", encoding="utf-8-sig") as f:
         f.write(text)
