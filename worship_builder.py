@@ -331,7 +331,8 @@ class WorshipBuilder:
                 self.progress(base + (1 - base) * i / max(total, 1), f"병합 중: {label}")
 
             with PptEngine(self.log, pcfg.get("text_placeholder", ""), pcfg.get("text_shape_name", ""),
-                           pcfg.get("merge_mode") or MERGE_SOURCE_FORMATTING, pcfg.get("fill_defaults")) as eng:
+                           pcfg.get("merge_mode") or MERGE_SOURCE_FORMATTING, pcfg.get("fill_defaults"),
+                           pcfg.get("slide_size") or "original") as eng:
                 result = eng.merge(jobs, output, {
                     "{{교회이름}}": req.church, "{{날짜}}": req.date, "{{예배종류}}": req.worship,
                 }, on_progress)

@@ -31,6 +31,7 @@ from worship_builder import (BuildError, BuildRequest, WorshipBuilder, find_temp
 APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
 MODES = {"라이트": "Light", "다크": "Dark", "시스템": "System"}
+SLIDE_SIZE_LABELS = {"원본": "original", "16:9": "16:9", "4:3": "4:3"}  # 화면 표시 → config.ppt.slide_size
 MIN_FILE_ROWS = 4  # 최소 창 크기에서도 템플릿 파일 목록이 이만큼은 보이도록
 FILE_FONT_SIZE = 13.2  # 템플릿 파일 목록 글자 크기 (기본 12 의 110% — 항목 줄 높이도 글자 크기를 따라 커짐)
 RESIZE_SETTLE_MS = 150  # 창 크기 조절이 이 시간 동안 멈추면 그때 내용 배치를 새 크기로 맞춤
@@ -490,26 +491,40 @@ class App(ctk.CTk):
         bar.grid(row=3, column=0, sticky="ew", padx=20, pady=(10, 16))
         bar.grid_columnconfigure(0, weight=1)
         left = ctk.CTkFrame(bar, fg_color="transparent")
-        left.grid(row=0, column=0, sticky="ew", padx=16, pady=12)
+        left.grid(row=0, column=0, rowspan=2, sticky="ew", padx=16, pady=12)
         self.status = ctk.CTkLabel(left, text="준비됨", font=font(12), text_color=TEXT2, anchor="w")
         self.status.pack(fill="x")
         self.progress = ctk.CTkProgressBar(left, height=6, progress_color=ACCENT)
         self.progress.set(0)
         self.progress.pack(fill="x", pady=(4, 0))
-        secondary_button(bar, "로그", self._show_log, width=60).grid(row=0, column=1, padx=(0, 8))
+        secondary_button(bar, "로그", self._show_log, width=60).grid(row=0, column=1, rowspan=2, padx=(0, 8))
         self.open_after = ctk.BooleanVar(value=bool(self.cfg.get("ppt", "open_after_build")))
         self.slideshow = ctk.BooleanVar(value=bool(self.cfg.get("ppt", "start_slideshow")))
         ctk.CTkCheckBox(bar, text="생성 후 열기", variable=self.open_after, font=font(12), checkbox_width=20,
-                        checkbox_height=20, fg_color=ACCENT, command=self._on_open_after).grid(row=0, column=2, padx=8)
+                        checkbox_height=20, fg_color=ACCENT, command=self._on_open_after).grid(
+            row=0, column=2, padx=8, pady=(12, 4), sticky="w")
         self.slideshow_cb = ctk.CTkCheckBox(
             bar, text="슬라이드 쇼로 시작", variable=self.slideshow, font=font(12), checkbox_width=20,
             checkbox_height=20, fg_color=ACCENT,
             command=lambda: self.cfg.set("ppt", "start_slideshow", self.slideshow.get()))
-        self.slideshow_cb.grid(row=0, column=3, padx=8)
+        self.slideshow_cb.grid(row=0, column=3, padx=8, pady=(12, 4), sticky="w")
         self._on_open_after(save=False)
+        # 두 체크박스 아래: 결과 슬라이드 비율 (원본 = 첫 PPT 크기)
+        size_row = ctk.CTkFrame(bar, fg_color="transparent")
+        size_row.grid(row=1, column=2, columnspan=2, padx=8, pady=(4, 12), sticky="w")
+        ctk.CTkLabel(size_row, text="슬라이드 비율", font=font(12), text_color=TEXT).pack(side="left", padx=(0, 8))
+        self.size_seg = ctk.CTkSegmentedButton(size_row, values=list(SLIDE_SIZE_LABELS), font=font(12), height=28,
+                                               selected_color=ACCENT, command=self._set_slide_size)
+        cur = self.cfg.get("ppt", "slide_size")
+        self.size_seg.set(next((k for k, v in SLIDE_SIZE_LABELS.items() if v == cur), "원본"))
+        self.size_seg.pack(side="left")
         self.build_btn = accent_button(bar, "예배 PPT 병합 및 생성", self._build, width=220, height=42,
                                        font=font(15, "bold"))
-        self.build_btn.grid(row=0, column=4, padx=(8, 16), pady=12)
+        self.build_btn.grid(row=0, column=4, rowspan=2, padx=(8, 16), pady=12)
+
+    def _set_slide_size(self, label: str):
+        self.cfg.set("ppt", "slide_size", SLIDE_SIZE_LABELS[label])
+        self._set_status("슬라이드 비율: " + ("첫 PPT 크기 그대로" if label == "원본" else label))
 
     def _on_open_after(self, save: bool = True):
         """'슬라이드 쇼로 시작'은 '생성 후 열기'가 켜져 있을 때만 선택 가능."""

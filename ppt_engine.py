@@ -41,6 +41,10 @@ MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3  # 자동화로 여는 파일의 매�
 MERGE_SOURCE_FORMATTING = "source_formatting"
 MERGE_WINDOWLESS = "windowless"
 
+# 결과 슬라이드 비율 → (가로, 세로) pt. 16:9 는 현재 PowerPoint 기본(13.333×7.5in), 4:3 은 10×7.5in.
+# 그 외 값(original)은 첫 PPT 크기 그대로.
+SLIDE_SIZES = {"16:9": (960.0, 540.0), "4:3": (720.0, 540.0)}
+
 LogFn = Callable[[str], None]
 
 
@@ -60,11 +64,12 @@ class PptEngineError(RuntimeError):
 class PptEngine:
     def __init__(self, log: LogFn | None = None, text_placeholder: str = "{{내용}}",
                  text_shape_name: str = "내용", merge_mode: str = MERGE_SOURCE_FORMATTING,
-                 fill_defaults: list[str] | None = None):
+                 fill_defaults: list[str] | None = None, slide_size: str = "original"):
         self.log = log or (lambda m: None)
         self.text_placeholder = text_placeholder
         self.text_shape_name = text_shape_name
         self.fill_defaults = list(fill_defaults or [])  # n 번 값이 비었을 때 넣을 문구 (없거나 비면 토큰을 지움)
+        self.slide_size = slide_size
         self.merge_mode = merge_mode
         self.app = None
         self._was_running = False
@@ -156,6 +161,7 @@ class PptEngine:
                 first.Close()
                 raise PptEngineError(f"결과 파일을 저장할 수 없습니다 (파일이 열려 있는지 확인):\n{output}\n{_com_msg(e)}") from e
             dest = first
+            self._apply_slide_size(dest)
             ranges = [(1, dest.Slides.Count)]
             self.log(f"[1/{len(jobs)}] {jobs[0].title} — {dest.Slides.Count}장")
 
@@ -193,6 +199,22 @@ class PptEngine:
                 except Exception:
                     pass
 
+    def _apply_slide_size(self, dest) -> None:
+        """결과 비율을 지정했으면 베이스(첫 PPT 사본)의 슬라이드 크기를 바꾼다. 이어 붙이는 슬라이드는 이 크기에 맞춰진다.
+        COM 으로 크기를 바꾸면 PowerPoint 의 [맞춤 확인]처럼 동작한다 (실측: 4:3→16:9 는 내용을 그대로 두고 가운데로,
+        16:9→4:3 은 내용을 비율대로 줄여 위아래 여백) → 내용이 잘리지 않음."""
+        size = SLIDE_SIZES.get(self.slide_size)
+        if size is None:
+            return
+        ps = dest.PageSetup
+        if abs(ps.SlideWidth - size[0]) <= 1 and abs(ps.SlideHeight - size[1]) <= 1:
+            return
+        try:
+            ps.SlideWidth, ps.SlideHeight = size
+            self.log(f"슬라이드 비율을 {self.slide_size} 로 맞춤")
+        except pywintypes.com_error as e:
+            self.log(f"⚠ 슬라이드 비율을 {self.slide_size} 로 바꾸지 못했습니다: {_com_msg(e)}")
+
     def _append(self, dest, source: Path) -> int:
         src = self._open(source)
         try:
@@ -201,7 +223,10 @@ class PptEngine:
                 return 0
             if (abs(src.PageSetup.SlideWidth - dest.PageSetup.SlideWidth) > 1
                     or abs(src.PageSetup.SlideHeight - dest.PageSetup.SlideHeight) > 1):
-                self.log(f"  ⚠ 슬라이드 크기가 다릅니다: {source.name} (첫 PPT 크기에 맞춰짐)")
+                if self.slide_size in SLIDE_SIZES:  # 비율을 직접 골랐으면 맞추는 게 의도한 동작 → 경고 아님
+                    self.log(f"  {source.name}: 슬라이드 크기를 {self.slide_size} 에 맞춤")
+                else:
+                    self.log(f"  ⚠ 슬라이드 크기가 다릅니다: {source.name} (첫 PPT 크기에 맞춰짐)")
             if self.merge_mode == MERGE_SOURCE_FORMATTING:
                 try:
                     self._paste_source_formatting(src, dest)

@@ -71,6 +71,7 @@ ChurchPPTMaker/
 │                         │ [기도][찬송][말씀][설교][CCM][사용자 지정] ← 드래그&드롭 │
 ├─────────────────────────┴───────────────────────────────────────────────────┤
 │ 상태 메시지 / 진행바  [로그] [✓ 생성 후 열기] [☐ 슬라이드 쇼로 시작] [예배 PPT 병합 및 생성] │
+│                              슬라이드 비율 [원본|16:9|4:3]                                  │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 - 파일 이름: 결과 파일 이름 형식 입력칸 + [항목 ▾](tk.Menu 로 커서 위치에 `{항목}` 삽입) + [기본값] + 실시간 미리보기(잘못되면 ⚠).
@@ -167,6 +168,11 @@ Bible2PPT.exe <성경 구절...> [옵션]
     (단색은 RGB 정확 복사, 그라데이션/그림 등은 원본 도형을 잠시 숨기고 2560px PNG로 내보내 `UserPicture`). 클립보드 실패 시 `InsertFromFile`.
   - ⚠ 그냥 `Slides.Paste`/`InsertFromFile` 만 쓰면 **슬라이드별 배경이 사라진다** (대상 테마 사용과 동일) — 2026-10-06 실험으로 확인.
 - 애니메이션/전환/폰트는 슬라이드 복사 시 그대로 따라온다. 원본 파일은 절대 수정하지 않는다(ReadOnly 열기).
+- 슬라이드 비율(`config.ppt.slide_size`: original | 16:9 | 4:3, 하단 생성 옵션 아래 `App.size_seg`):
+  original 은 첫 PPT 크기. 16:9(960×540pt)·4:3(720×540pt)이면 베이스를 SaveAs 한 직후 `_apply_slide_size` 로
+  PageSetup 을 바꾼 뒤 나머지를 이어 붙인다(붙인 슬라이드는 결과 크기에 맞춰짐). COM 크기 변경은 [맞춤 확인]처럼 동작(실측:
+  4:3→16:9 내용 그대로 가운데, 16:9→4:3 내용을 0.75배로 줄여 위아래 여백 — 잘리지 않음). 비율을 직접 골랐으면
+  크기가 다른 원본에 ⚠ 경고를 남기지 않음(의도한 동작).
 - UI 스레드를 막지 않도록 작업 스레드에서 `pythoncom.CoInitialize()` 후 실행.
 
 ## 8. 사용자 설정 (config.json)
@@ -181,7 +187,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
   "item_templates": {"sermon_file": ""},
   "ppt": {"text_placeholder": "{{내용}}", "text_shape_name": "내용", "fill_defaults": ["", "", ""],
           "open_after_build": true, "start_slideshow": false,
-          "merge_mode": "source_formatting"}
+          "merge_mode": "source_formatting", "slide_size": "original"}
 }
 ```
 - `start_slideshow`: 생성 후 열 때 `os.startfile(path, "show")`(= .pptx 의 Show 동사, `POWERPNT.EXE /s`)로 바로 쇼 시작.
