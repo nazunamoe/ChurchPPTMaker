@@ -188,6 +188,9 @@ Bible2PPT.exe <성경 구절...> [옵션]
      기본 클릭 선택 바인딩은 "break" 로 끄고 `_select_file` 만 선택 표시). 일반 tk 위젯은 모드 전환 시
      `AppearanceModeTracker` 콜백(`_on_appearance_change`)에서 다시 칠함 — 콜백 순회 중이므로 `after_idle` 로 지연.
   - 참고: 일반 tk.Label 200개도 리사이즈당 ~200ms → Windows 에선 위젯(HWND) 수가 곧 비용. 목록형 UI 는 위젯 수를 줄일 것.
+- **최소 창 높이**: 고정 660 은 왼쪽 패널보다 낮아 템플릿 목록이 0줄로 사라졌다. `App._apply_min_size` 가 첫 배치 후
+  `창 높이 - 목록 높이 + 목록 MIN_FILE_ROWS(4)줄 높이` 로 계산해 지정 (CTk 위젯의 reqheight 는 실제보다 커서 쓰지 않음).
+  왼쪽 열에서 세로로 늘고 주는 행은 템플릿 목록뿐이라는 전제 — 왼쪽 패널에 가변 높이 요소를 추가하면 함께 고칠 것.
 
 ## 11-1. 보안 규칙 (2026-10-07 점검)
 - COM 으로 연 파일은 **보호된 보기 없이** 열리고, 자동화 기본값(`AutomationSecurity=1`)은 매크로를 허용한다(실측).

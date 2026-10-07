@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 import os
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from worship_builder import BuildError, BuildRequest, WorshipBuilder, list_ppt_f
 APP_TITLE = "예배 순서 PPT 제작 프로그램 v1.0"
 DATE_FMT = "%Y-%m-%d"
 MODES = {"라이트": "Light", "다크": "Dark", "시스템": "System"}
+MIN_FILE_ROWS = 4  # 최소 창 크기에서도 템플릿 파일 목록이 이만큼은 보이도록
 RESIZE_SETTLE_MS = 150  # 창 크기 조절이 이 시간 동안 멈추면 그때 내용 배치를 새 크기로 맞춤
 # PyInstaller onefile 은 번들 파일을 sys._MEIPASS 에 풀어 둠
 ICON_PATH = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets" / "app.ico"
@@ -130,8 +132,9 @@ class App(ctk.CTk):
     def _on_window_configure(self, e):
         if e.widget is not self or (e.width, e.height) == self._content_size:
             return
-        if self._content_size is None:  # 처음 표시될 때는 바로 맞춤
+        if self._content_size is None:  # 처음 표시될 때는 바로 맞추고, 실제 배치를 보고 최소 높이 결정
             self._fit_content()
+            self.after(100, self._apply_min_size)
             return
         if self._resize_job is not None:
             self.after_cancel(self._resize_job)
@@ -152,6 +155,20 @@ class App(ctk.CTk):
         scale = ctk.ScalingTracker.get_window_scaling(self)  # 크기는 논리 단위, 위치는 실제 픽셀
         self.geometry(f"{w}x{h}+{int(max((sw - w) // 2, 0) * scale)}+{int(max((sh - h) // 3, 0) * scale)}")
         self.minsize(min(1000, w), min(660, h))
+
+    def _apply_min_size(self):
+        """최소 높이를 '템플릿 목록이 MIN_FILE_ROWS 줄 보이는 높이'로 맞춘다.
+        고정값 660 은 왼쪽 패널보다 낮아서 최소 크기에서 템플릿 목록이 0줄로 눌려 사라졌다.
+        창 높이가 줄면 왼쪽에서는 템플릿 목록만 줄어드므로 (현재 창 높이 - 현재 목록 높이 + 목록 MIN_FILE_ROWS 줄 높이)가
+        필요한 최소 높이다. CTk 위젯 요청 크기(reqheight)는 실제보다 커서 실제 배치로 계산. 화면보다 크게 잡지는 않음."""
+        self.update_idletasks()
+        lb = self.file_listbox
+        if not lb.winfo_ismapped():
+            return
+        scale = ctk.ScalingTracker.get_window_scaling(self)
+        need = math.ceil((self.winfo_height() - lb.winfo_height() + lb.winfo_reqheight()) / scale)  # 픽셀 → 논리 단위
+        screen = self.winfo_screenheight() - 90  # _fit_to_screen 과 같은 기준 (논리 단위)
+        self.minsize(round(self.wm_minsize()[0] / scale), max(660, min(need, screen)))
 
     # ================================================================ 상단
     def _build_header(self):
@@ -247,7 +264,7 @@ class App(ctk.CTk):
         # 파일마다 CTkButton 을 만들면 파일 수만큼 위젯(HWND)이 늘어 창 크기 조절이 느려진다 → tk.Listbox 하나로 그림
         box = ctk.CTkFrame(tc, fg_color=SUBTLE, corner_radius=8)
         box.grid(row=2, column=0, sticky="nsew", padx=14)
-        self.file_listbox = tk.Listbox(box, height=5, activestyle="none", borderwidth=0, highlightthickness=0,
+        self.file_listbox = tk.Listbox(box, height=MIN_FILE_ROWS, activestyle="none", borderwidth=0, highlightthickness=0,
                                        exportselection=False, selectmode="browse", font=tk_font(self, 12),
                                        cursor="hand2")
         sb = ctk.CTkScrollbar(box, command=self.file_listbox.yview)
