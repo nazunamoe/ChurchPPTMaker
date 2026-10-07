@@ -81,9 +81,13 @@ DEFAULT_PRESETS = [
 
 def _deep_merge(base: dict, override: dict) -> dict:
     out = copy.deepcopy(base)
-    for k, v in (override or {}).items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _deep_merge(out[k], v)
+    for k, v in (override if isinstance(override, dict) else {}).items():
+        if isinstance(out.get(k), dict):
+            if isinstance(v, dict):
+                out[k] = _deep_merge(out[k], v)
+            # 기본값이 dict 인데 다른 타입이면 무시 (손상된 설정으로 인한 오류 방지)
+        elif k in base and base[k] is not None and v is not None and not isinstance(v, type(base[k])):
+            continue  # 타입 불일치 → 기본값 유지
         else:
             out[k] = v
     return out
@@ -150,13 +154,28 @@ class ConfigManager:
         return p if p.is_absolute() else (app_dir() / p)
 
 
+def _clean_presets(raw: list) -> list[dict]:
+    """presets.json 검증: 형식이 잘못된 프리셋은 버리고, 항목은 ServiceItem 으로 정규화."""
+    out, seen = [], set()
+    for p in raw:
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name")
+        if not isinstance(name, str) or PresetManager.validate_name(name) or name in seen:
+            continue
+        items = p.get("items") if isinstance(p.get("items"), list) else []
+        seen.add(name)
+        out.append({"name": name, "items": [ServiceItem.from_dict(d).to_dict() for d in items if isinstance(d, dict)]})
+    return out
+
+
 class PresetManager:
     def __init__(self, path: Path = PRESETS_PATH):
         self.path = path
         data = _read_json(path)
         if not data or not isinstance(data.get("presets"), list):
             data = {"presets": copy.deepcopy(DEFAULT_PRESETS)}
-        self.presets: list[dict] = data["presets"][:MAX_PRESETS]
+        self.presets: list[dict] = _clean_presets(data["presets"])[:MAX_PRESETS]
         self.save()
 
     def save(self) -> None:

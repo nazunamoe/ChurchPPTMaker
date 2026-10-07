@@ -169,6 +169,18 @@ Bible2PPT.exe <성경 구절...> [옵션]
   seq 의 바인딩을 **전부** 지워 아래 다이얼로그의 Esc/Enter 가 사라진다.
 - `PptEngine` 은 내부에서 CoInitialize/CoUninitialize 하므로 반드시 작업 스레드에서 `with` 로 사용.
 
+## 11-1. 보안 규칙 (2026-10-07 점검)
+- COM 으로 연 파일은 **보호된 보기 없이** 열리고, 자동화 기본값(`AutomationSecurity=1`)은 매크로를 허용한다(실측).
+  → `PptEngine` 이 작업 동안 `AutomationSecurity=3`(강제 비활성)으로 바꾸고, `DisplayAlerts` 와 함께 종료 시 원래 값으로 복원.
+- 외부 프로그램 실행은 `subprocess` 리스트 인자만(`shell=True` 금지). Bible2PPT 경로는 **`.exe` 만 허용**
+  (.bat/.cmd 는 cmd.exe 가 인자를 재해석해 `&` 등으로 명령 주입 가능). `-b` 값은 `safe_bible_arg` 로 `-` 시작·제어 문자 거부.
+  구절은 `_REF_RE` 로 검증돼 옵션처럼 시작할 수 없다.
+- Bible2PPT stdout 이 알려준 경로는 지정한 출력 폴더 안의 파일만 인정.
+- 출력 파일명은 `sanitize_filename`(경로 구분자·제어 문자 제거, CON/NUL 등 예약어 회피)으로만 만들고,
+  결과 경로가 원본 PPT 와 같으면 생성 거부(원본 덮어쓰기 방지).
+- config.json / presets.json 은 외부에서 수정될 수 있는 입력으로 취급: 기본값과 타입이 다른 값은 무시, 잘못된 프리셋/항목은 버림,
+  `options` 는 문자열 값만 유지.
+
 ## 12. 작업 규칙
 - UI 배치를 바꿀 때는 §4 초안 구조(순서 패널 = 프리셋 행 / 순서 목록 / 팔레트 행)를 유지한다.
 - 사용자 메시지는 한국어. 모든 입력 검증 실패는 `messagebox.showerror`로 알린다.

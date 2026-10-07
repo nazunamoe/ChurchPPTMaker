@@ -662,6 +662,10 @@ class SettingsDialog(_Modal):
         except ValueError:
             messagebox.showerror("입력 오류", "실행 제한 시간은 10 이상의 숫자로 입력해 주세요.", parent=self)
             return
+        exe_raw = self.exe.get().strip()
+        if exe_raw and not exe_raw.lower().endswith(".exe"):
+            messagebox.showerror("입력 오류", "Bible2PPT 경로는 .exe 실행 파일이어야 합니다.", parent=self)
+            return
         lines = self.lines.get()
         b = self.cfg.get("bible2ppt")
         b.update(exe_path=self.exe.get().strip(), bible=self.bible.get().strip(), template=self.tpl.get().strip(),

@@ -169,16 +169,34 @@ def supports_cli(exe: Path) -> bool:
     return "--list-bibles".encode("utf-16-le") in data
 
 
+def safe_bible_arg(entry: str) -> str:
+    """-b 로 넘길 값. 옵션처럼 보이는 값('-'로 시작)이나 제어 문자는 거부 (프리셋 파일 조작 등으로 인한 인자 주입 방지)."""
+    arg = bible_arg(entry)
+    if arg.startswith("-") or any(ord(c) < 32 for c in arg):
+        raise Bible2PPTError(f"올바르지 않은 성경 역본 값입니다: {entry!r}")
+    return arg
+
+
+def _timeout(value) -> int:
+    try:
+        return max(int(value), 10)
+    except (TypeError, ValueError):
+        return 180
+
+
 class Bible2PPT:
-    def __init__(self, exe_path: Path | None, timeout_sec: int = 180):
+    def __init__(self, exe_path: Path | None, timeout_sec=180):
         self.exe_path = exe_path
-        self.timeout_sec = timeout_sec
+        self.timeout_sec = _timeout(timeout_sec)
 
     def check(self) -> None:
         if not self.exe_path:
             raise Bible2PPTError("Bible2PPT.exe 경로가 설정되지 않았습니다. ⚙ 설정에서 지정해 주세요.")
         if not Path(self.exe_path).is_file():
             raise Bible2PPTError(f"Bible2PPT.exe 를 찾을 수 없습니다:\n{self.exe_path}")
+        if Path(self.exe_path).suffix.lower() != ".exe":
+            # .bat/.cmd 는 cmd.exe 가 인자를 다시 해석하므로(& | 등) 인자 주입 위험 → 실행 파일만 허용
+            raise Bible2PPTError(f"Bible2PPT 경로는 .exe 파일이어야 합니다:\n{self.exe_path}")
         if not supports_cli(Path(self.exe_path)):
             raise Bible2PPTError(
                 "이 Bible2PPT 는 명령줄 실행을 지원하지 않는 버전입니다 (인자를 줘도 창만 열림).\n"
@@ -206,7 +224,7 @@ class Bible2PPT:
         bibles = [bible] if isinstance(bible, str) else (bible or [])
         for b in bibles:
             if b and b.strip():
-                args += ["-b", bible_arg(b)]
+                args += ["-b", safe_bible_arg(b)]
         if template:
             args += ["-t", str(template)]
         if lines is not None and 0 <= int(lines) <= 9:
@@ -218,10 +236,13 @@ class Bible2PPT:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise Bible2PPTError(f"{msg}\n구절: {' '.join(refs)}" + (f"\n\n{detail}" if detail else ""))
 
-        # 성공 시 저장 경로가 stdout 으로 출력됨 — 마지막 유효 경로를 우선 사용
+        # 성공 시 저장 경로가 stdout 으로 출력됨 — 마지막 유효 경로를 우선 사용.
+        # 단, 지정한 출력 폴더 안의 파일만 인정 (엉뚱한 경로의 파일을 병합에 끌어들이지 않도록)
+        out_dir = output.parent.resolve()
         for line in reversed((proc.stdout or "").splitlines()):
             p = Path(line.strip().strip('"'))
-            if line.strip() and p.suffix.lower() in (".pptx", ".ppt") and p.is_file():
+            if (line.strip() and p.suffix.lower() in (".pptx", ".ppt") and p.is_file()
+                    and p.resolve().parent == out_dir):
                 return p
         if output.is_file():
             return output

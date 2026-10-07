@@ -34,6 +34,7 @@ PP_SAVE_AS_PPTX = 24
 PP_ALERTS_NONE = 1
 PP_WINDOW_MINIMIZED = 2
 PP_VIEW_NORMAL = 9
+MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3  # 자동화로 여는 파일의 매크로 강제 비활성
 
 MERGE_SOURCE_FORMATTING = "source_formatting"
 MERGE_WINDOWLESS = "windowless"
@@ -64,6 +65,8 @@ class PptEngine:
         self._was_running = False
         self._prev_window_state = None
         self._window = None
+        self._prev_alerts = None
+        self._prev_security = None
         self._design_cache: dict[tuple[str, str], object] = {}
         self._tmp: Path | None = None
 
@@ -81,13 +84,28 @@ class PptEngine:
                 raise PptEngineError("PowerPoint 를 실행할 수 없습니다. Microsoft PowerPoint 설치를 확인해 주세요.") from e
             self._was_running = False
         try:
+            self._prev_alerts = self.app.DisplayAlerts
             self.app.DisplayAlerts = PP_ALERTS_NONE
         except pywintypes.com_error:
             pass
+        # COM 으로 연 파일은 보호된 보기 없이 열리고 기본값(LowByDefault)이면 매크로도 허용된다.
+        # 인터넷에서 받은 .pptm/.ppt 의 매크로·ActiveX 코드가 실행되지 않도록 작업 동안 강제로 막는다.
+        try:
+            self._prev_security = self.app.AutomationSecurity
+            self.app.AutomationSecurity = MSO_AUTOMATION_SECURITY_FORCE_DISABLE
+        except (pywintypes.com_error, AttributeError):
+            self.log("⚠ PowerPoint 매크로 차단 설정을 적용하지 못했습니다.")
         self._tmp = Path(tempfile.mkdtemp(prefix="ChurchPPT_bg_"))
         return self
 
     def __exit__(self, *exc):
+        # 사용자가 쓰던 PowerPoint 라면 알림/매크로 보안 설정을 원래대로 (전역 설정이라 그대로 두면 영향이 남음)
+        for attr, prev in (("AutomationSecurity", self._prev_security), ("DisplayAlerts", self._prev_alerts)):
+            try:
+                if prev is not None and self.app is not None:
+                    setattr(self.app, attr, prev)
+            except Exception:
+                pass
         try:
             if self._prev_window_state is not None and self._was_running:
                 self.app.WindowState = self._prev_window_state

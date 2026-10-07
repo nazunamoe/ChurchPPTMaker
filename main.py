@@ -537,7 +537,7 @@ class App(ctk.CTk):
 
     def _bible2ppt(self) -> Bible2PPT:
         b = self.cfg.get("bible2ppt")
-        return Bible2PPT(self.cfg.resolve_file(b.get("exe_path", "")), int(b.get("timeout_sec") or 180))
+        return Bible2PPT(self.cfg.resolve_file(b.get("exe_path", "")), b.get("timeout_sec"))
 
     def _bible_exe_ok(self) -> bool:
         exe = self.cfg.resolve_file(self.cfg.get("bible2ppt", "exe_path"))

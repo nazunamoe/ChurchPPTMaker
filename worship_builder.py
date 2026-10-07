@@ -21,8 +21,14 @@ class BuildError(RuntimeError):
     pass
 
 
+_RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])$", re.IGNORECASE)
+
+
 def sanitize_filename(text: str) -> str:
-    return _INVALID_FN.sub("", text).strip().rstrip(".")
+    """파일명에 쓸 수 없는 문자(경로 구분자 포함)·제어 문자를 제거 → 다른 폴더로 빠져나가는 경로 생성 방지."""
+    text = "".join(c for c in text if ord(c) >= 32)
+    text = _INVALID_FN.sub("", text).strip().rstrip(". ")
+    return f"_{text}" if _RESERVED.match(text) else text
 
 
 def output_filename(date: str, church: str, worship: str) -> str:
@@ -115,7 +121,7 @@ class WorshipBuilder:
 
     def _bible(self) -> Bible2PPT:
         b = self.cfg.get("bible2ppt")
-        return Bible2PPT(self.cfg.resolve_file(b.get("exe_path", "")), int(b.get("timeout_sec") or 180))
+        return Bible2PPT(self.cfg.resolve_file(b.get("exe_path", "")), b.get("timeout_sec"))
 
     def build(self, req: BuildRequest) -> Path:
         if not req.items:
@@ -126,6 +132,10 @@ class WorshipBuilder:
 
         out_dir = self.cfg.resolve_path("output_dir")
         output = out_dir / output_filename(req.date, req.church, req.worship)
+        sources = {p.resolve() for p in paths if p is not None}
+        if output.resolve() in sources:
+            raise BuildError(f"결과 파일 경로가 원본 PPT 와 같아 원본을 덮어쓰게 됩니다:\n{output}\n"
+                             "출력 폴더를 템플릿/찬송가 폴더와 다른 곳으로 지정해 주세요.")
         tmp = Path(tempfile.mkdtemp(prefix="ChurchPPT_"))
         bcfg = self.cfg.get("bible2ppt")
         n_bible = sum(1 for it in req.items if it.kind == KIND_BIBLE)

@@ -33,8 +33,9 @@ class ServiceItem:
         kind = data.get("kind", KIND_CUSTOM)
         if kind not in KIND_LABELS:
             kind = KIND_CUSTOM
-        return cls(kind=kind, label=str(data.get("label", "")), value=str(data.get("value", "")),
-                   options=dict(data.get("options") or {}))
+        opts = data.get("options")
+        opts = {str(k): v for k, v in opts.items() if isinstance(v, str)} if isinstance(opts, dict) else {}
+        return cls(kind=kind, label=str(data.get("label", "")), value=str(data.get("value", "")), options=opts)
 
     @property
     def display_value(self) -> str:
