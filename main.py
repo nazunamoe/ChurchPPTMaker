@@ -25,7 +25,7 @@ from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
 from worship_builder import (BuildError, BuildRequest, WorshipBuilder, list_ccm_files, list_ppt_files, output_filename,
-                             prayer_template_names)
+                             prayer_template_names, sermon_template)
 
 APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
@@ -575,6 +575,10 @@ class App(ctk.CTk):
                 messagebox.showerror("기도 템플릿 없음", "기도 템플릿 폴더에 PPT 파일이 없습니다.\n"
                                      "합심기도.pptx, 중보기도.pptx 처럼 기도 종류별 PPT 를 넣어 주세요.", parent=self)
                 return False
+        if kind == KIND_SERMON and sermon_template(self.cfg) is None:
+            messagebox.showerror("설교 템플릿 설정 필요", "설교 템플릿 PPT 가 설정되지 않았거나 찾을 수 없습니다.\n"
+                                 "상단 ⚙ 설정 → 기도 · 설교 템플릿에서 설교 템플릿 PPT 를 지정해 주세요.", parent=self)
+            return False
         return True
 
     def _prompt_new(self, kind: str, idx: int):

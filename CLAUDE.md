@@ -87,11 +87,12 @@ ChurchPPTMaker/
 | `prayer` | 기도 종류 = 기도 템플릿 이름 (예: 합심기도) | 기도자 이름(필수) | 설정의 **기도 템플릿 폴더**에서 **왼쪽 이름**의 PPT 호출 + 지정 텍스트 박스에 이름 입력 |
 | `hymn`   | 찬송             | `29장`(필수)   | 찬송가 폴더(하위 포함)에서 **오른쪽 장 번호**의 PPT 검색 |
 | `bible`  | 말씀             | `요3:16`(필수) | Bible2PPT CLI로 구절 PPT 생성 후 병합 |
-| `sermon` | 설교             | 설교 제목(필수) + `options.preacher` 설교자(필수) | 템플릿 폴더의 `설교.pptx` 호출 + 제목→내용1, 설교자→내용2 |
+| `sermon` | 설교             | 설교 제목(필수) + `options.preacher` 설교자(필수) | 설정의 **설교 템플릿 PPT**(파일 하나) 호출 + 제목→내용1, 설교자→내용2 |
 | `ccm`    | CCM              | CCM 폴더 기준 상대 경로 `봄/곡명.pptx`(필수, 화면엔 `ccm_title`=파일명) | CCM 폴더(하위 포함)의 그 파일. 텍스트 입력 없음 |
 
 - 기도 템플릿 폴더(`item_templates.prayer_dir`)가 미설정/없음/비었으면 기도 추가 시 에러(`App._can_add`).
   예전 프리셋의 기도 항목(label `기도`)은 그 폴더의 `기도.pptx` 를 찾는다.
+- 설교 템플릿(`item_templates.sermon_file`, `worship_builder.sermon_template`)이 미설정/없으면 설교 추가 시 에러.
 - 템플릿 파일 매칭: 파일명(확장자 제외)이 label과 같거나, 공백 제거 후 같으면 일치. 확장자 `.pptx/.pptm/.ppt`.
 - 찬송가 매칭 우선순위: ① 파일명이 `29`, `029`, `29장`, `029장` ② 파일명의 **첫 번째 숫자**가 29 ③ (숫자 없는 값) 파일명에 값 포함.
 - CCM 매칭(`find_ccm`): ① 저장된 상대 경로 ② 같은 파일명(다른 하위 폴더로 이동) ③ 공백·대소문자 무시 곡명. CCM 폴더 밖 경로(`..`·절대 경로)는 거부.
@@ -151,7 +152,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
   "paths": {"template_dir": "templates", "hymn_dir": "hymns", "ccm_dir": "ccm", "output_dir": "output"},
   "bible2ppt": {"exe_path": "", "bible": "", "template": "", "lines": null, "timeout_sec": 180,
                 "bible_list": []},
-  "item_templates": {"prayer_dir": ""},
+  "item_templates": {"prayer_dir": "", "sermon_file": ""},
   "ppt": {"text_placeholder": "{{내용}}", "text_shape_name": "내용", "open_after_build": true, "start_slideshow": false,
           "merge_mode": "source_formatting"}
 }

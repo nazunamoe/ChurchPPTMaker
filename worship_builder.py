@@ -68,6 +68,12 @@ def prayer_template_names(cfg: ConfigManager) -> list[str] | None:
     return [p.stem for p in list_ppt_files(folder)]
 
 
+def sermon_template(cfg: ConfigManager) -> Path | None:
+    """설정의 설교 템플릿 PPT. 지정되지 않았거나 파일이 없으면 None."""
+    p = cfg.resolve_file(cfg.get("item_templates", "sermon_file", ""))
+    return p if p and p.is_file() and p.suffix.lower() in PPT_EXTS else None
+
+
 def find_hymn(folder: Path, value: str) -> Path | None:
     files = list_ppt_files(folder, recursive=True)
     num = hymn_number(value)
@@ -151,11 +157,17 @@ class WorshipBuilder:
                     problems.append(f"{idx}. 기도 — ⚙ 설정에서 기도 템플릿 폴더를 지정해 주세요")
                 elif not p:
                     problems.append(f"{idx}. '{it.label}' — 기도 템플릿 폴더에 '{it.label}.pptx' 없음")
+            elif it.kind == KIND_SERMON:
+                p = sermon_template(self.cfg)
+                if not self.cfg.get("item_templates", "sermon_file", ""):
+                    problems.append(f"{idx}. 설교 — ⚙ 설정에서 설교 템플릿 PPT 를 지정해 주세요")
+                elif not p:
+                    problems.append(f"{idx}. 설교 — 설교 템플릿 PPT 를 찾을 수 없음: "
+                                    f"{self.cfg.get('item_templates', 'sermon_file')}")
             else:
-                name = {KIND_SERMON: "설교"}.get(it.kind, it.label)
-                p = find_template(tdir, name)
+                p = find_template(tdir, it.label)
                 if not p:
-                    problems.append(f"{idx}. '{name}' — 템플릿 폴더에 '{name}.pptx' 없음")
+                    problems.append(f"{idx}. '{it.label}' — 템플릿 폴더에 '{it.label}.pptx' 없음")
             paths.append(p)
         if any(it.kind == KIND_BIBLE for it in items):
             try:

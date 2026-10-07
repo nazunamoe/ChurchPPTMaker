@@ -14,7 +14,7 @@ import customtkinter as ctk
 from bible_bridge import Bible2PPT, bible_sources, filter_bibles, search_names, short_source, split_bible
 from models import (KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, MAX_FILL,
                     ServiceItem, ccm_title, make_item, numbered_token, validate_item)
-from worship_builder import list_ppt_files
+from worship_builder import PPT_EXTS, list_ppt_files
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
 FONT_FAMILY = "Malgun Gothic"
@@ -500,7 +500,7 @@ class ItemDialog(_Modal):
                 self.preacher_entry.insert(0, self.options["preacher"])
             self.preacher_entry.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
             row += 1
-            ctk.CTkLabel(body, text="템플릿 폴더의 '설교' PPT 에서 제목은 {{내용1}}, 설교자는 {{내용2}} 자리에 들어갑니다.",
+            ctk.CTkLabel(body, text="설정의 설교 템플릿 PPT 에서 제목은 {{내용1}}, 설교자는 {{내용2}} 자리에 들어갑니다.",
                          font=font(11), text_color=TEXT2).grid(row=row, column=0, columnspan=2, padx=16, sticky="w")
             row += 1
         if kind == KIND_BIBLE:
@@ -712,9 +712,15 @@ class SettingsDialog(_Modal):
         self.prayer_dir.bind("<KeyRelease>", lambda e: self._show_prayer_hint(), add="+")
         self.prayer_hint = ctk.CTkLabel(body, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left",
                                         wraplength=380)
-        self.prayer_hint.grid(row=r, column=1, columnspan=2, sticky="w", pady=(0, 10))
+        self.prayer_hint.grid(row=r, column=1, columnspan=2, sticky="w", pady=(0, 4))
         r += 1
         self._show_prayer_hint()
+        self.sermon_file = entry(t.get("sermon_file"))
+        row("설교 템플릿 (.pptx)", self.sermon_file,
+            lambda: self._browse(self.sermon_file, [("PowerPoint", "*.pptx *.pptm *.ppt")]))
+        ctk.CTkLabel(body, text="설교 제목은 {{내용1}}, 설교자는 {{내용2}} 자리에 들어갑니다.", font=font(11),
+                     text_color=TEXT2, anchor="w").grid(row=r, column=1, columnspan=2, sticky="w", pady=(0, 14))
+        r += 1
 
         body, r = self._pages[self.PAGES[1]], 0
         section("PPT 병합")
@@ -880,13 +886,20 @@ class SettingsDialog(_Modal):
             self._show_page(self.PAGES[0])
             messagebox.showerror("입력 오류", f"기도 템플릿 폴더를 찾을 수 없습니다:\n{prayer_raw}", parent=self)
             return
+        sermon_raw = self.sermon_file.get().strip()
+        if sermon_raw:
+            sp = self.cfg.resolve_file(sermon_raw)
+            if not sp.is_file() or sp.suffix.lower() not in PPT_EXTS:
+                self._show_page(self.PAGES[0])
+                messagebox.showerror("입력 오류", f"설교 템플릿 PPT 파일을 찾을 수 없습니다:\n{sermon_raw}", parent=self)
+                return
         lines = self.lines.get()
         b = self.cfg.get("bible2ppt")
         b.update(exe_path=self.exe.get().strip(), bible=self.bible.get().strip(), template=self.tpl.get().strip(),
                  lines=None if lines == "프로그램 설정" else int(lines), timeout_sec=timeout,
                  # 현재 exe 로 불러온 목록만 캐시 (exe 가 바뀌었는데 아직 못 불러왔으면 비움 → 메인에서 다시 불러옴)
                  bible_list=self.bible_values if self._loaded_for is not None and self._loaded_for == self._exe() else [])
-        self.cfg.get("item_templates").update(prayer_dir=prayer_raw)
+        self.cfg.get("item_templates").update(prayer_dir=prayer_raw, sermon_file=sermon_raw)
         p = self.cfg.get("ppt")
         p.update(text_placeholder=self.placeholder.get().strip(), text_shape_name=self.shape_name.get().strip(),
                  merge_mode=MERGE_MODES[self.merge_mode.get()])

@@ -42,6 +42,7 @@ DEFAULT_CONFIG: dict = {
     },
     "item_templates": {
         "prayer_dir": "",  # 기도 템플릿 폴더 (합심기도.pptx, 중보기도.pptx … — 기도 추가 시 하나 선택)
+        "sermon_file": "",  # 설교 템플릿 PPT 파일 (하나)
     },
     "ppt": {
         "text_placeholder": "{{내용}}",
