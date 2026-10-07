@@ -31,6 +31,7 @@ APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
 MODES = {"라이트": "Light", "다크": "Dark", "시스템": "System"}
 MIN_FILE_ROWS = 4  # 최소 창 크기에서도 템플릿 파일 목록이 이만큼은 보이도록
+FILE_FONT_SIZE = 13.2  # 템플릿 파일 목록 글자 크기 (기본 12 의 110% — 항목 줄 높이도 글자 크기를 따라 커짐)
 RESIZE_SETTLE_MS = 150  # 창 크기 조절이 이 시간 동안 멈추면 그때 내용 배치를 새 크기로 맞춤
 # PyInstaller onefile 은 번들 파일을 sys._MEIPASS 에 풀어 둠
 ICON_PATH = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets" / "app.ico"
@@ -313,7 +314,7 @@ class App(ctk.CTk):
         box = ctk.CTkFrame(tc, fg_color=SUBTLE, corner_radius=8)
         box.grid(row=2, column=0, sticky="nsew", padx=14)
         self.file_listbox = tk.Listbox(box, height=MIN_FILE_ROWS, activestyle="none", borderwidth=0, highlightthickness=0,
-                                       exportselection=False, selectmode="browse", font=tk_font(self, 12),
+                                       exportselection=False, selectmode="browse", font=tk_font(self, FILE_FONT_SIZE),
                                        cursor="hand2")
         sb = ctk.CTkScrollbar(box, command=self.file_listbox.yview)
         self.file_listbox.configure(yscrollcommand=sb.set)
@@ -827,7 +828,7 @@ class App(ctk.CTk):
 
     def _rescale_plain_widgets(self):
         lb = self.file_listbox
-        lb.configure(font=tk_font(self, 12))
+        lb.configure(font=tk_font(self, FILE_FONT_SIZE))
         lb.pack_configure(padx=(scaled(self, 8), 0), pady=scaled(self, 6))
         self._render_list()
 

@@ -93,7 +93,7 @@ def scaled(widget: tk.Misc, value: float) -> int:
     return round(value * ctk.ScalingTracker.get_widget_scaling(widget))
 
 
-def tk_font(widget: tk.Misc, size: int = 13, weight: str = "normal") -> tuple:
+def tk_font(widget: tk.Misc, size: float = 13, weight: str = "normal") -> tuple:
     """일반 tk 위젯용 글꼴 — CTk 위젯의 font(size) 와 같은 크기(음수 = 픽셀)."""
     return (FONT_FAMILY, -scaled(widget, size), weight)
 
