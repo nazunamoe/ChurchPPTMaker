@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -22,7 +23,7 @@ from bible_bridge import Bible2PPT, Bible2PPTError, parse_references
 from config_manager import MAX_PRESETS, ConfigManager, PresetManager, save_worship_to_text, load_worship_from_text
 from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
                     KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, make_item, numbered_token, validate_item)
-from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
+from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
                         TEXT2, BibleField, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog,
                         accent_button, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
@@ -309,30 +310,37 @@ class App(ctk.CTk):
 
         # 결과 파일 이름 형식: {항목} 자리에 값이 들어감. 프리셋을 저장하면 함께 저장되고, 불러오면 프리셋의 형식으로 바뀜
         # 출력 폴더: 결과 파일이 저장되는 곳이라 파일 이름 형식 바로 왼쪽에 둔다
-        label(line2, "출력 폴더").pack(side="left", padx=(8, 8), pady=(5, 6))
+        # 실제 파일 이름 미리보기는 길이가 교회 이름·예배 종류에 따라 늘어나 같은 줄에 두면 상단 카드(창) 너비를 밀어내므로
+        # 아랫줄의 형식 입력칸 밑에 두고, 남는 너비보다 길면 줄여서(…) 표시한다 (_update_filename_preview).
+        line2.grid_columnconfigure(8, weight=1)
+        label(line2, "출력 폴더").grid(row=0, column=0, padx=(8, 8), pady=(5, 2))
         var = tk.StringVar(value=str(self.cfg.resolve_path("output_dir")))
         self.path_vars["output_dir"] = var
-        ctk.CTkEntry(line2, textvariable=var, state="readonly", width=180, height=34, font=font(12),
-                     text_color=TEXT2).pack(side="left")
-        for text, cmd in (("📁", lambda: self._choose_folder("output_dir")), ("↗", lambda: self._open_folder("output_dir"))):
+        ctk.CTkEntry(line2, textvariable=var, state="readonly", width=220, height=34, font=font(12),
+                     text_color=TEXT2).grid(row=0, column=1)
+        for col, (text, cmd) in enumerate((("📁", lambda: self._choose_folder("output_dir")),
+                                           ("↗", lambda: self._open_folder("output_dir"))), 2):
             b = secondary_button(line2, text, cmd, width=34)
             b.configure(height=34)
-            b.pack(side="left", padx=(4, 0))
+            b.grid(row=0, column=col, padx=(4, 0))
 
-        label(line2, "파일 이름").pack(side="left", padx=(20, 8))
-        self.format_entry = ctk.CTkEntry(line2, width=230, height=34, font=font(13),
+        label(line2, "파일 이름").grid(row=0, column=4, padx=(28, 8))
+        self.format_entry = ctk.CTkEntry(line2, width=280, height=34, font=font(13),
                                          placeholder_text=DEFAULT_FILENAME_FORMAT)
         self.format_entry.insert(0, self.cfg.get("filename_format") or DEFAULT_FILENAME_FORMAT)
-        self.format_entry.pack(side="left")
+        self.format_entry.grid(row=0, column=5)
         self.format_entry.bind("<KeyRelease>", on_change)
         self.format_menu_btn = secondary_button(line2, "항목 ▾", self._open_format_menu, width=64)
         self.format_menu_btn.configure(height=34)
-        self.format_menu_btn.pack(side="left", padx=(4, 4))
+        self.format_menu_btn.grid(row=0, column=6, padx=(4, 4))
         b = secondary_button(line2, "기본값", lambda: self._set_filename_format(DEFAULT_FILENAME_FORMAT), width=64)
         b.configure(height=34)
-        b.pack(side="left")
-        self.filename_preview = ctk.CTkLabel(line2, text="", font=font(12), text_color=TEXT2, anchor="w")
-        self.filename_preview.pack(side="left", fill="x", expand=True, padx=(12, 8))
+        b.grid(row=0, column=7)
+        self.filename_preview = ctk.CTkLabel(line2, text="", font=font(12), text_color=TEXT2, anchor="w", height=20)
+        self.filename_preview.grid(row=1, column=5, columnspan=4, sticky="w", padx=(2, 0), pady=(2, 4))
+        self._preview_text = ("", TEXT2)  # 줄이기 전 전체 문구 (창 크기가 바뀌면 다시 맞춤)
+        # 줄 너비가 실제로 바뀐 뒤에 다시 줄인다 (창 크기 조절은 _fit_content 가 멈췄을 때 한 번만 반영하므로 여기서도 한 번)
+        line2.bind("<Configure>", lambda e: self._fit_filename_preview(), add="+")
         self._update_filename_preview()
 
     def _open_format_menu(self):
@@ -359,11 +367,27 @@ class App(ctk.CTk):
         fmt = self.format_entry.get().strip()
         err = validate_filename_format(fmt)
         if err:
-            self.filename_preview.configure(text="⚠ " + err.splitlines()[0], text_color=DANGER)
-            return
-        name = output_filename(self.date_entry.get().strip(), self.church_entry.get().strip(),
-                               self.worship_entry.get().strip(), fmt)
-        self.filename_preview.configure(text=f"→  {name}", text_color=TEXT2)
+            self._preview_text = ("⚠ " + err.splitlines()[0], DANGER)
+        else:
+            name = output_filename(self.date_entry.get().strip(), self.church_entry.get().strip(),
+                                   self.worship_entry.get().strip(), fmt)
+            self._preview_text = (f"→  {name}", TEXT2)
+        self._fit_filename_preview()
+
+    def _fit_filename_preview(self):
+        """미리보기가 형식 입력칸 왼쪽 끝부터 카드 오른쪽 끝까지 남는 너비보다 길면 가운데를 '…' 로 줄인다.
+        (긴 글자가 라벨 요청 너비를 키워 상단 카드·창을 넓히지 않도록)"""
+        text, color = self._preview_text
+        lb = self.filename_preview
+        avail = lb.master.winfo_width() - self.format_entry.winfo_x() - scaled(self, 12)
+        if avail > 50:  # 아직 배치 전(너비 1)이면 그대로
+            f = tkfont.Font(family=FONT_FAMILY, size=-scaled(self, 12))
+            if f.measure(text) > avail:
+                head, tail = text[:len(text) // 2], text[len(text) // 2:]
+                while (head or tail) and f.measure(head + "…" + tail) > avail:
+                    head, tail = head[:-1], tail[1:]
+                text = head + "…" + tail
+        lb.configure(text=text, text_color=color)
 
     # ================================================================ 본문
     def _build_body(self):
