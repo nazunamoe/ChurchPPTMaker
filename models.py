@@ -57,6 +57,15 @@ class ServiceItem:
         return []
 
 
+def numbered_token(base: str, n: int) -> str:
+    """'{{내용}}' → '{{내용1}}' (닫는 '}}' 앞에 번호). '}}' 로 끝나지 않으면 끝에 붙임."""
+    if not base:
+        return ""
+    if base.endswith("}}") and len(base) > 2:
+        return f"{base[:-2]}{n}}}}}"
+    return f"{base}{n}"
+
+
 def normalize_hymn(value: str) -> str:
     """'29' → '29장', '29 장' → '29장'. 숫자가 없으면 그대로(곡명 검색용)."""
     v = value.strip().replace(" ", "")

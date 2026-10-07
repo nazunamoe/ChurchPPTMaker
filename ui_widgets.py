@@ -12,8 +12,8 @@ from typing import Any, Callable
 import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, bible_sources, filter_bibles, short_source, split_bible
-from models import (KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, ServiceItem,
-                    make_item, validate_item)
+from models import (KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem,
+                    make_item, numbered_token, validate_item)
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
 FONT_FAMILY = "Malgun Gothic"
@@ -582,13 +582,28 @@ class SettingsDialog(_Modal):
         row("병합 방식", self.merge_mode)
 
         section("텍스트 입력 규칙")
-        self.placeholder = entry(p.get("text_placeholder"), width=200)
-        row("치환 토큰", self.placeholder)
-        self.shape_name = entry(p.get("text_shape_name"), width=200)
-        row("텍스트 상자 이름", self.shape_name)
-        ctk.CTkLabel(body, text="치환 토큰에 번호를 붙인 {{내용1}}~{{내용3}} 을 항목 값으로 바꿉니다 "
-                                "(기도·찬송·사용자 지정: 1, 설교: 1=제목 2=설교자).\n"
-                                "토큰이 없으면 이름이 내용1~내용3 인 텍스트 상자에 입력합니다. 예전 {{내용}} 은 내용1 로 취급합니다.\n"
+
+        def numbered_row(label, value, make):
+            """기본형 입력칸 + 실제로 쓰일 번호 붙은 이름 미리보기 (입력할 때마다 갱신)."""
+            box = ctk.CTkFrame(body, fg_color="transparent")
+            e = ctk.CTkEntry(box, width=140, font=font(13))
+            e.insert(0, value or "")
+            e.pack(side="left")
+            preview = ctk.CTkLabel(box, text="", font=font(12), text_color=ACCENT)
+            preview.pack(side="left", padx=(10, 0))
+
+            def update(_=None):
+                base = e.get().strip()
+                preview.configure(text="→  " + "   ".join(make(base, n) for n in range(1, MAX_FILL + 1)) if base else "")
+            e.bind("<KeyRelease>", update, add="+")
+            update()
+            row(label, box)
+            return e
+
+        self.placeholder = numbered_row("치환 토큰", p.get("text_placeholder"), numbered_token)
+        self.shape_name = numbered_row("텍스트 상자 이름", p.get("text_shape_name"), lambda b, n: f"{b}{n}")
+        ctk.CTkLabel(body, text="기본형에 번호를 붙여 사용합니다. 1번: 기도자 이름·찬송 장·사용자 지정 문구·설교 제목 / 2번: 설교자.\n"
+                                "토큰이 없으면 같은 이름의 텍스트 상자에 입력합니다. 번호 없는 기본형은 1번으로 취급합니다(예전 템플릿 호환).\n"
                                 "공통 토큰: {{교회이름}} {{날짜}} {{예배종류}}",
                      font=font(11), text_color=TEXT2, justify="left").grid(
             row=r, column=0, columnspan=3, padx=16, pady=(2, 14), sticky="w")

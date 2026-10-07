@@ -26,7 +26,7 @@ import pythoncom
 import pywintypes
 import win32com.client
 
-from models import MAX_FILL
+from models import MAX_FILL, numbered_token
 
 MSO_TRUE = -1
 MSO_FALSE = 0
@@ -427,14 +427,6 @@ class PptEngine:
                     continue
         return False
 
-
-def numbered_token(base: str, n: int) -> str:
-    """'{{내용}}' → '{{내용1}}' (닫는 '}}' 앞에 번호). '}}' 로 끝나지 않으면 끝에 붙임."""
-    if not base:
-        return ""
-    if base.endswith("}}") and len(base) > 2:
-        return f"{base[:-2]}{n}}}}}"
-    return f"{base}{n}"
 
 def _replace_all(text_range, find: str, repl: str, limit: int = 200) -> int:
     """TextRange.Replace 는 한 번에 하나만 바꾸므로 반복 (글자 서식 유지)."""
