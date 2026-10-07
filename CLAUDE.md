@@ -14,6 +14,9 @@
 - **pywin32 (`win32com.client`)** — PowerPoint COM 자동화 (백그라운드, `WithWindow=False`)
 - **Bible2PPT** (https://github.com/nazunamoe/Bible2PPT) — 외부 실행 파일을 CLI로 호출
 - 실행: `pip install -r requirements.txt` → `python main.py`
+- 빌드: `build.bat` (→ `build.ps1`: `.venv` 생성 → `requirements-build.txt` 설치 → PyInstaller `--onefile --windowed --collect-data customtkinter`) → `dist\ChurchPPTMaker.exe`
+  - `build.ps1` 은 **UTF-8 BOM + CRLF** 로 유지 (Windows PowerShell 5.1 은 BOM 없는 파일을 ANSI로 읽어 한글이 깨짐).
+  - 패키징 시 `config_manager` 가 `sys.frozen` 을 보고 exe 폴더를 프로그램 폴더로 사용.
 
 ## 3. 디렉토리 구조 및 핵심 파일 역할
 ```
@@ -21,6 +24,8 @@ ChurchPPTMaker/
 ├─ CLAUDE.md           이 문서
 ├─ README.md           사용자용 소개·빌드·사용 방법 (기능/설정이 바뀌면 함께 갱신)
 ├─ 초안.png            Excalidraw UI 초안 (UI의 기준)
+├─ requirements.txt    실행 패키지 / requirements-build.txt  빌드용(+PyInstaller)
+├─ build.bat, build.ps1  exe 빌드 스크립트 (.venv 자동 생성)
 ├─ main.py             진입점 + 메인 윈도우(App), 패널 구성, 드래그&드롭, 프리셋/생성 이벤트
 ├─ ui_widgets.py       재사용 위젯: 공통 색/폰트, _Modal(창 내부 오버레이 다이얼로그), CalendarPopup, ItemDialog,
 │                      SettingsDialog, LogDialog, DragController, 스레드→UI 큐(post_to_ui/run_in_thread)

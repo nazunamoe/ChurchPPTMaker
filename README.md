@@ -50,13 +50,27 @@ output\         완성된 예배 PPT 저장 폴더
 
 Python이 없는 교회 컴퓨터에서도 쓸 수 있도록 하나의 `.exe` 파일로 만들 수 있습니다.
 
+**`build.bat`을 더블클릭**하거나 PowerShell에서 실행하면 됩니다.
+
 ```powershell
 cd ChurchPPTMaker
-pip install -r requirements.txt pyinstaller
+.\build.bat           # 처음 실행 시 .venv 가상환경 생성 → 패키지 설치 → exe 빌드
+.\build.bat -Clean    # build\, dist\ 를 지우고 새로 빌드
+```
+
+`build.bat`은 실행 정책과 관계없이 `build.ps1`을 실행하며, `build.ps1`은 다음을 자동으로 처리합니다.
+1. 프로그램 폴더에 `.venv` 가상환경 생성 (이미 있으면 재사용)
+2. `requirements-build.txt` 설치 (실행 패키지 + PyInstaller)
+3. PyInstaller로 단일 exe 빌드
+
+직접 빌드하려면:
+
+```powershell
+pip install -r requirements-build.txt
 pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --collect-data customtkinter main.py
 ```
 
-- 결과물: `dist\ChurchPPTMaker.exe` (약 15MB)
+- 결과물: `dist\ChurchPPTMaker.exe` (약 14MB)
 - `--collect-data customtkinter`는 UI 테마 파일을 포함하기 위해 **반드시** 필요합니다.
 - exe를 처음 실행하면 `config.json`, `presets.json`, `templates\`, `hymns\`, `output\`이 **exe와 같은 폴더**에 만들어집니다.
   다른 컴퓨터로 옮길 때는 exe와 함께 이 파일·폴더들을 같이 복사하면 설정과 템플릿이 그대로 유지됩니다.
@@ -240,6 +254,8 @@ ChurchPPTMaker/
 ├─ config_manager.py   설정·프리셋 저장
 ├─ models.py           순서 항목 정의
 ├─ requirements.txt    필요한 Python 패키지
+├─ requirements-build.txt  빌드용 패키지 (requirements.txt + PyInstaller)
+├─ build.bat / build.ps1   exe 빌드 스크립트
 ├─ CLAUDE.md           개발용 상세 문서 (구조·규칙·개발 히스토리)
 └─ 초안.png            UI 초안
 ```
