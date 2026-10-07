@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 import customtkinter as ctk
 
+from bible_bridge import Bible2PPT
 from models import KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, ServiceItem, make_item, validate_item
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
@@ -321,11 +322,18 @@ class ItemDialog(_Modal):
 
 # ---------------------------------------------------------------- 설정 창
 class SettingsDialog(_Modal):
+    """설정 창. Bible2PPT.exe 를 지정하면 --list-bibles 로 역본 목록을 바로 불러와 기본 역본 목록을 채운다.
+    저장 시 불러온 목록은 config.bible2ppt.bible_list 에 캐시된다."""
+
     def __init__(self, master, cfg):
         super().__init__(master, "설정")
         self.cfg = cfg
         b = cfg.get("bible2ppt")
         p = cfg.get("ppt")
+        self.bible_values: list[str] = list(b.get("bible_list") or [])
+        # 목록을 불러온 exe 경로 (캐시가 있으면 현재 설정된 exe 기준)
+        self._loaded_for = cfg.resolve_file(b.get("exe_path", "")) if self.bible_values else None
+        self._loading_for = None
 
         body = card(self)
         body.pack(fill="both", expand=True, padx=16, pady=(16, 8))
@@ -337,13 +345,13 @@ class SettingsDialog(_Modal):
                 row=r, column=0, columnspan=3, sticky="w", padx=16, pady=(14, 4))
             r += 1
 
-        def row(label, widget, browse=None):
+        def row(label, widget, browse=None, button_text="찾기"):
             nonlocal r
             ctk.CTkLabel(body, text=label, font=font(13), text_color=TEXT, anchor="w", width=150).grid(
                 row=r, column=0, padx=16, pady=5, sticky="w")
             widget.grid(row=r, column=1, pady=5, sticky="w")
             if browse:
-                secondary_button(body, "찾기", browse, width=56).grid(row=r, column=2, padx=(6, 16), pady=5)
+                secondary_button(body, button_text, browse, width=56).grid(row=r, column=2, padx=(6, 16), pady=5)
             r += 1
 
         def entry(value, width=320):
@@ -353,9 +361,16 @@ class SettingsDialog(_Modal):
 
         section("Bible2PPT 연동")
         self.exe = entry(b.get("exe_path"))
-        row("Bible2PPT.exe 경로", self.exe, lambda: self._browse(self.exe, [("Bible2PPT", "*.exe")]))
-        self.bible = entry(b.get("bible"))
-        row("기본 성경 역본", self.bible)
+        row("Bible2PPT.exe 경로", self.exe, self._browse_exe)
+        self.exe.bind("<FocusOut>", lambda e: self._load_bibles_if_needed())
+        self.exe.bind("<Return>", lambda e: self._load_bibles_if_needed())
+        self.bible = ctk.CTkComboBox(body, width=320, values=self.bible_values, font=font(13), dropdown_font=font(13))
+        self.bible.set(b.get("bible") or "")
+        row("기본 성경 역본", self.bible, self._load_bibles, button_text="↻")
+        self.bible_hint = ctk.CTkLabel(body, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left")
+        self.bible_hint.grid(row=r, column=1, columnspan=2, sticky="w", pady=(0, 4))
+        r += 1
+        self._show_bible_hint()
         self.tpl = entry(b.get("template"))
         row("성경 템플릿 (.pptx)", self.tpl, lambda: self._browse(self.tpl, [("PowerPoint", "*.pptx")]))
         self.lines = ctk.CTkComboBox(body, width=160, values=["프로그램 설정"] + [str(i) for i in range(10)],
@@ -387,11 +402,79 @@ class SettingsDialog(_Modal):
         accent_button(btns, "저장", self._save, width=96).pack(side="right")
         secondary_button(btns, "취소", self.destroy, width=96).pack(side="right", padx=8)
 
-    def _browse(self, entry: ctk.CTkEntry, types):
+    def on_shown(self):
+        self._load_bibles_if_needed()  # exe 는 지정돼 있는데 목록이 없으면 바로 불러옴
+
+    def _browse(self, entry: ctk.CTkEntry, types) -> bool:
         path = filedialog.askopenfilename(parent=self, filetypes=types + [("모든 파일", "*.*")])
         if path:
             entry.delete(0, "end")
             entry.insert(0, path)
+        return bool(path)
+
+    def _browse_exe(self):
+        if self._browse(self.exe, [("Bible2PPT", "*.exe")]):
+            self._load_bibles_if_needed()
+
+    # ---- 역본 목록 (Bible2PPT --list-bibles)
+    def _exe(self):
+        exe = self.cfg.resolve_file(self.exe.get().strip())
+        return exe if exe and exe.is_file() else None
+
+    def _show_bible_hint(self, text: str | None = None, error: bool = False):
+        if text is None:
+            if self._exe() is None:
+                text = "Bible2PPT.exe 를 지정하면 사용할 수 있는 역본 목록을 불러옵니다."
+            elif self.bible_values:
+                text = f"역본 {len(self.bible_values)}종 — 목록에서 고르거나 비워 두면 Bible2PPT 마지막 선택값을 사용합니다."
+            else:
+                text = "↻ 를 눌러 역본 목록을 불러오세요."
+        self.bible_hint.configure(text=text, text_color=DANGER if error else TEXT2)
+
+    def _load_bibles_if_needed(self):
+        exe = self._exe()
+        if exe is not None and exe != self._loaded_for and exe != self._loading_for:
+            self._load_bibles()
+        elif self._loading_for is None:
+            self._show_bible_hint()
+
+    def _load_bibles(self):
+        exe = self._exe()
+        if exe is None:
+            self._show_bible_hint("Bible2PPT.exe 경로를 먼저 지정해 주세요.", error=True)
+            return
+        if exe == self._loading_for:
+            return
+        self._loading_for = exe
+        try:
+            timeout = max(int(self.timeout.get().strip() or 180), 10)
+        except ValueError:
+            timeout = 180
+        self._show_bible_hint("역본 목록을 불러오는 중… (인터넷에서 받아오므로 잠시 걸릴 수 있습니다)")
+        run_in_thread(lambda: Bible2PPT(exe, timeout).list_bibles(), lambda res, err: self._on_bibles(exe, res, err))
+
+    def _on_bibles(self, exe, res, err):
+        if self._closing or not self.winfo_exists():
+            return
+        if exe != self._loading_for:  # 그사이 다른 경로를 불러오는 중
+            return
+        self._loading_for = None
+        if exe != self._exe():  # 그사이 경로가 바뀜 → 새 경로로 다시
+            self._load_bibles_if_needed()
+            return
+        if err:
+            first = str(err).strip().splitlines()[0] if str(err).strip() else type(err).__name__
+            self._show_bible_hint(f"⚠ 역본 목록을 불러오지 못했습니다: {first}", error=True)
+            return
+        self.bible_values = res
+        self._loaded_for = exe
+        self.bible.configure(values=res)
+        cur = self.bible.get().strip()
+        if cur and cur not in res:  # 예전 형식(이름만 입력)이면 목록의 같은 이름 항목으로 맞춤
+            match = next((v for v in res if v.startswith(f"{cur} · ") or v.startswith(f"{cur} [")), None)
+            if match:
+                self.bible.set(match)
+        self._show_bible_hint()
 
     def _save(self):
         try:
@@ -404,7 +487,9 @@ class SettingsDialog(_Modal):
         lines = self.lines.get()
         b = self.cfg.get("bible2ppt")
         b.update(exe_path=self.exe.get().strip(), bible=self.bible.get().strip(), template=self.tpl.get().strip(),
-                 lines=None if lines == "프로그램 설정" else int(lines), timeout_sec=timeout)
+                 lines=None if lines == "프로그램 설정" else int(lines), timeout_sec=timeout,
+                 # 현재 exe 로 불러온 목록만 캐시 (exe 가 바뀌었는데 아직 못 불러왔으면 비움 → 메인에서 다시 불러옴)
+                 bible_list=self.bible_values if self._loaded_for is not None and self._loaded_for == self._exe() else [])
         p = self.cfg.get("ppt")
         p.update(text_placeholder=self.placeholder.get().strip(), text_shape_name=self.shape_name.get().strip(),
                  merge_mode=MERGE_MODES[self.merge_mode.get()])

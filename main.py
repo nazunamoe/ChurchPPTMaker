@@ -39,7 +39,8 @@ class App(ctk.CTk):
         self.row_widgets: list[ctk.CTkFrame] = []
         self.file_buttons: dict[str, ctk.CTkButton] = {}
         self.selected_file: str | None = None
-        self.bible_values: list[str] = []
+        self.bible_values: list[str] = list(self.cfg.get("bible2ppt", "bible_list") or [])
+        self._bible_loading = False
         self.log_lines: list[str] = []
         self.building = False
         self._save_job = None
@@ -58,6 +59,7 @@ class App(ctk.CTk):
         self._refresh_presets()
         self._render_list()
         self._update_bible_status()
+        self._load_bible_list_if_needed()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         pump_ui_queue(self)
 
@@ -179,8 +181,9 @@ class App(ctk.CTk):
         self.verse_entry.bind("<Return>", lambda e: self._add_bible_from_form())
         brow = ctk.CTkFrame(bc, fg_color="transparent")
         brow.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14)
+        default_bible = self.cfg.get("bible2ppt", "bible")
         self.bible_combo = ctk.CTkComboBox(brow, height=32, font=font(12), dropdown_font=font(12),
-                                           values=[self.cfg.get("bible2ppt", "bible")] if self.cfg.get("bible2ppt", "bible") else [])
+                                           values=self.bible_values or ([default_bible] if default_bible else []))
         self.bible_combo.set(self.cfg.get("bible2ppt", "bible") or "")
         self.bible_combo.pack(side="left", fill="x", expand=True)
         secondary_button(brow, "↻", self._load_bible_list, width=32).pack(side="left", padx=4)
@@ -479,25 +482,62 @@ class App(ctk.CTk):
         b = self.cfg.get("bible2ppt")
         return Bible2PPT(self.cfg.resolve_file(b.get("exe_path", "")), int(b.get("timeout_sec") or 180))
 
-    def _update_bible_status(self):
+    def _bible_exe_ok(self) -> bool:
         exe = self.cfg.resolve_file(self.cfg.get("bible2ppt", "exe_path"))
-        if exe and exe.is_file():
-            self.bible_status.configure(text=f"✔ 연결됨: {exe.name}", text_color=KIND_COLORS[KIND_PRAYER])
-        else:
+        return bool(exe and exe.is_file())
+
+    def _update_bible_status(self, note: str | None = None, error: bool = False):
+        exe = self.cfg.resolve_file(self.cfg.get("bible2ppt", "exe_path"))
+        if not self._bible_exe_ok():
             self.bible_status.configure(text="⚠ Bible2PPT.exe 경로가 설정되지 않았습니다 — 상단 ⚙ 설정에서 지정",
                                         text_color=DANGER)
+            return
+        if note is None:
+            note = f"역본 {len(self.bible_values)}종" if self.bible_values else "역본 목록 없음 — ↻ 로 불러오기"
+            error = not self.bible_values
+        self.bible_status.configure(text=f"✔ 연결됨: {exe.name} · {note}",
+                                    text_color=DANGER if error else KIND_COLORS[KIND_PRAYER])
 
-    def _load_bible_list(self):
-        self._set_status("성경 목록을 불러오는 중…")
+    def _set_bible_values(self, values: list[str]):
+        self.bible_values = values
+        self.bible_combo.configure(values=values)
+        cur = self.bible_combo.get().strip()
+        if not cur or cur not in values:  # 비었거나 예전 형식이면 설정의 기본 역본으로 맞춤
+            default = self.cfg.get("bible2ppt", "bible") or ""
+            if not cur or default in values:
+                self.bible_combo.set(default)
+
+    def _load_bible_list_if_needed(self):
+        """exe 는 있는데 캐시된 역본 목록이 없으면 (예: 첫 실행·이전 버전 설정) 조용히 불러온다."""
+        if self._bible_exe_ok() and not self.bible_values:
+            self._load_bible_list(silent=True)
+
+    def _load_bible_list(self, silent: bool = False):
+        if self._bible_loading:
+            return
+        if not self._bible_exe_ok():
+            if not silent:
+                messagebox.showerror("Bible2PPT", "Bible2PPT.exe 경로가 설정되지 않았습니다. ⚙ 설정에서 지정해 주세요.",
+                                     parent=self)
+            return
+        self._bible_loading = True
+        self._update_bible_status("역본 목록을 불러오는 중…")
+        if not silent:
+            self._set_status("성경 목록을 불러오는 중…")
 
         def done(res, err):
+            self._bible_loading = False
             if err:
-                messagebox.showerror("Bible2PPT", str(err), parent=self)
-                self._set_status("성경 목록 불러오기 실패")
+                self._update_bible_status("역본 목록을 불러오지 못함 — ↻ 로 다시 시도", error=True)
+                if not silent:
+                    messagebox.showerror("Bible2PPT", str(err), parent=self)
+                    self._set_status("성경 목록 불러오기 실패")
                 return
-            self.bible_values = res
-            self.bible_combo.configure(values=res)
-            self._set_status(f"성경 {len(res)}종을 불러왔습니다.")
+            self.cfg.set("bible2ppt", "bible_list", res)
+            self._set_bible_values(res)
+            self._update_bible_status()
+            if not silent:
+                self._set_status(f"성경 {len(res)}종을 불러왔습니다.")
 
         run_in_thread(lambda: self._bible2ppt().list_bibles(), done)
 
@@ -528,9 +568,11 @@ class App(ctk.CTk):
 
     def _open_settings(self):
         if SettingsDialog(self, self.cfg).show():
+            self._set_bible_values(list(self.cfg.get("bible2ppt", "bible_list") or []))
             if not self.bible_combo.get().strip():
                 self.bible_combo.set(self.cfg.get("bible2ppt", "bible") or "")
             self._update_bible_status()
+            self._load_bible_list_if_needed()  # exe 를 바꿨는데 설정 창에서 목록을 못 받았으면 다시 시도
             self._set_status("설정을 저장했습니다.")
 
     def _schedule_save(self):

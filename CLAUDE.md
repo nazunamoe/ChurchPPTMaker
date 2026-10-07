@@ -100,6 +100,12 @@ Bible2PPT.exe <성경 구절...> [옵션]
 - 구절 문법: `책약자[시작장[:시작절][-[끝장[:끝절]|끝절]]]` 예) `창`, `창1`, `롬1-3`, `전1:3`, `창1:1-5`, `사1:3-3:9`
 - 입력 정규화: 쉼표/세미콜론으로 여러 구절 구분, 각 구절 내부 공백 제거(`요 3:16` → `요3:16`), 전각 콜론 `：` → `:`.
 - 역본은 항목별(`options.bible`) → 없으면 설정 기본값 → 없으면 Bible2PPT 마지막 선택값.
+- `--list-bibles` 출력(포크 `CommandLine.cs` 확인): 헤더 `ID\t소스\t성경` + 줄마다 `ID\t소스\t이름`, 리다이렉트 시 UTF-8.
+  소스별 실패는 stderr 로만 알림(종료 코드 0). → `parse_bible_list` 가 `이름 · 소스 [ID]` 로 표시, `bible_arg` 가 `[ID]` 를 `-b` 로 전달.
+- 역본 목록은 `config.bible2ppt.bible_list` 에 캐시. 설정에서 exe 지정(찾기/입력 후 포커스 이동) 시 즉시 불러오고,
+  시작 시에는 exe 가 있고 캐시가 비었을 때만 조용히 불러옴(매 실행마다 Bible2PPT·PowerPoint 를 띄우지 않기 위함).
+- 원본 Bible2PPT 2.0.4(GUI 전용)는 인자를 무시하고 창을 띄운 채 멈춘다(실측: 180초 타임아웃).
+  → `supports_cli()` 가 실행 전에 .NET Framework exe 의 UTF-16 문자열 `--list-bibles` 유무로 판별해 즉시 안내.
 - Bible2PPT는 PowerPoint를 사용하므로 **병합 COM 작업 시작 전에 순차 실행**한다.
 
 ## 7. PPT 엔진 규칙 (ppt_engine.py)
@@ -119,7 +125,8 @@ Bible2PPT.exe <성경 구절...> [옵션]
 {
   "church_name": "", "worship_type": "주일오전예배", "appearance_mode": "System",
   "paths": {"template_dir": "templates", "hymn_dir": "hymns", "output_dir": "output"},
-  "bible2ppt": {"exe_path": "", "bible": "", "template": "", "lines": null, "timeout_sec": 180},
+  "bible2ppt": {"exe_path": "", "bible": "", "template": "", "lines": null, "timeout_sec": 180,
+                "bible_list": []},
   "ppt": {"text_placeholder": "{{내용}}", "text_shape_name": "내용", "open_after_build": true,
           "merge_mode": "source_formatting"}
 }

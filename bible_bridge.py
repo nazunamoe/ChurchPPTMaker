@@ -46,16 +46,53 @@ def parse_references(text: str) -> list[str]:
     return refs
 
 
+def format_bible(bible_id: str, source: str, name: str) -> str:
+    """역본 목록 표시 문자열: '개역개정 · 갓피아 [12]' (bible_arg 가 [ID] 를 꺼내 -b 로 넘김)."""
+    return f"{name} · {source} [{bible_id}]" if source else f"{name} [{bible_id}]"
+
+
+def parse_bible_list(stdout: str) -> list[str]:
+    """--list-bibles 출력('ID\\t소스\\t성경' 헤더 + 'ID\\t소스\\t이름' 줄)을 표시 문자열 목록으로."""
+    result = []
+    for line in stdout.splitlines():
+        cols = [c.strip() for c in line.split("\t")]
+        if not cols[0] or cols[:1] == ["ID"]:  # 빈 줄·헤더
+            continue
+        if len(cols) >= 3:
+            result.append(format_bible(cols[0], cols[1], cols[2]))
+        elif len(cols) == 2:
+            result.append(format_bible(cols[0], "", cols[1]))
+        else:
+            result.append(cols[0])
+    return result
+
+
 def bible_arg(entry: str) -> str:
-    """--list-bibles 한 줄(예: '12\t개역개정', '12 개역개정')에서 -b 에 넘길 값 추출.
-    ID 열이 있으면 ID, 아니면 줄 전체(이름)."""
+    """역본 표시 문자열에서 -b 에 넘길 값 추출.
+    '개역개정 · 갓피아 [12]' → '12', 'ID\\t소스\\t이름' 원본 줄 → ID, 그 외에는 이름으로 간주."""
     entry = entry.strip()
+    m = re.search(r"\[([^\[\]]+)\]$", entry)
+    if m:
+        return m.group(1).strip()
     if "\t" in entry:
         return entry.split("\t", 1)[0].strip()
     m = re.match(r"^(\S+)\s*[:|]?\s+\S", entry)
     if m and re.fullmatch(r"[\w.-]+", m.group(1)) and re.search(r"\d", m.group(1)):
         return m.group(1)
     return entry
+
+
+def supports_cli(exe: Path) -> bool:
+    """명령줄 지원 여부를 실행하지 않고 판별 (GUI 전용 버전은 인자를 무시하고 창을 띄운 채 멈춤).
+    .NET Framework 어셈블리면 CLI 도움말 문자열(UTF-16)이 exe 에 그대로 들어 있으므로 그 유무로 판단.
+    그 외 형식(단일 파일 압축 배포 등)은 판별할 수 없으므로 지원한다고 본다."""
+    try:
+        data = exe.read_bytes()
+    except OSError:
+        return True
+    if b".NETFramework,Version=" not in data:
+        return True
+    return "--list-bibles".encode("utf-16-le") in data
 
 
 class Bible2PPT:
@@ -68,6 +105,11 @@ class Bible2PPT:
             raise Bible2PPTError("Bible2PPT.exe 경로가 설정되지 않았습니다. ⚙ 설정에서 지정해 주세요.")
         if not Path(self.exe_path).is_file():
             raise Bible2PPTError(f"Bible2PPT.exe 를 찾을 수 없습니다:\n{self.exe_path}")
+        if not supports_cli(Path(self.exe_path)):
+            raise Bible2PPTError(
+                "이 Bible2PPT 는 명령줄 실행을 지원하지 않는 버전입니다 (인자를 줘도 창만 열림).\n"
+                "명령줄(--list-bibles 등)을 지원하는 Bible2PPT 를 지정해 주세요:\n"
+                "https://github.com/nazunamoe/Bible2PPT")
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess:
         self.check()
@@ -112,7 +154,16 @@ class Bible2PPT:
         raise Bible2PPTError(f"Bible2PPT 가 성공을 보고했지만 결과 파일이 없습니다:\n{output}")
 
     def list_bibles(self) -> list[str]:
+        """사용 가능한 역본 표시 문자열 목록. 소스별 실패는 stderr 로만 보고되므로 목록이 비면 그 내용을 알림."""
         proc = self._run(["--list-bibles"])
+        detail = (proc.stderr or "").strip()
         if proc.returncode != 0:
-            raise Bible2PPTError(EXIT_MESSAGES.get(proc.returncode, "성경 목록을 가져오지 못했습니다."))
-        return [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+            msg = EXIT_MESSAGES[3] if proc.returncode == 3 else (
+                f"성경 목록을 가져오지 못했습니다 (종료 코드 {proc.returncode}). "
+                "--list-bibles 를 지원하는 Bible2PPT 인지 확인해 주세요.")
+            raise Bible2PPTError(msg + (f"\n\n{detail}" if detail else ""))
+        bibles = parse_bible_list(proc.stdout or "")
+        if not bibles:
+            raise Bible2PPTError("사용할 수 있는 성경 역본이 없습니다. 인터넷 연결을 확인해 주세요."
+                                 + (f"\n\n{detail}" if detail else ""))
+        return bibles

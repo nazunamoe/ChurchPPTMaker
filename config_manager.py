@@ -37,6 +37,7 @@ DEFAULT_CONFIG: dict = {
         "template": "",
         "lines": None,
         "timeout_sec": 180,
+        "bible_list": [],  # --list-bibles 결과 캐시 (exe 지정·↻ 시 갱신)
     },
     "ppt": {
         "text_placeholder": "{{내용}}",
