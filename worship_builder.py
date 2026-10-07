@@ -1,17 +1,19 @@
 """예배 PPT 생성 파이프라인: 항목 → 원본 파일 해석 → Bible2PPT 생성 → 병합."""
 from __future__ import annotations
 
+import html
 import re
 import shutil
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from bible_bridge import Bible2PPT, Bible2PPTError
 from config_manager import ConfigManager
-from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_HYMN, KIND_PRAYER, KIND_SERMON,
-                    ServiceItem, ccm_title, hymn_number)
+from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER,
+                    KIND_SERMON, MAX_FILL, ServiceItem, ccm_title, hymn_number, numbered_token)
 from ppt_engine import MERGE_SOURCE_FORMATTING, MergeJob, PptEngine, PptEngineError
 
 PPT_EXTS = (".pptx", ".pptm", ".ppt")
@@ -89,6 +91,41 @@ def find_template(folder: Path, name: str) -> Path | None:
         if _norm(p.stem) == target:
             return p
     return None
+
+
+_SLIDE_XML = re.compile(r"ppt/slides/slide\d+\.xml")
+_A_T = re.compile(r"<a:t(?:\s[^>]*)?>([^<]*)</a:t>")
+_SHAPE_NAME = re.compile(r'<p:cNvPr\b[^>]*?\sname="([^"]*)"')
+_MAX_SLIDE_XML = 20_000_000  # 슬라이드 XML 하나의 최대 크기 (비정상적으로 큰 파일은 읽지 않음)
+
+
+def template_fill_slots(path: Path, placeholder: str, shape_name: str) -> set[int] | None:
+    """템플릿 PPT 의 슬라이드에서 텍스트 입력 자리 번호(1~MAX_FILL)를 찾는다 — 사용자 지정 항목 입력칸 표시용.
+    {{내용n}} 토큰(설정의 치환 토큰 기본형에 번호) 또는 이름이 '내용n' 인 도형이 있으면 n. 1번은 번호 없는 기본형도 인정.
+    PowerPoint 를 띄우지 않도록 .pptx/.pptm 의 슬라이드 XML 을 직접 읽는다. 토큰이 여러 글자 조각(run)으로 나뉘어
+    저장되는 경우가 많아 문단 단위로 글자를 이어 붙여 찾는다. 읽을 수 없는 형식(.ppt)·손상 파일이면 None."""
+    if path.suffix.lower() not in (".pptx", ".pptm"):
+        return None
+    texts: list[str] = []
+    names: set[str] = set()
+    try:
+        with zipfile.ZipFile(path) as z:
+            for info in z.infolist():
+                if not _SLIDE_XML.fullmatch(info.filename) or info.file_size > _MAX_SLIDE_XML:
+                    continue
+                xml = z.read(info).decode("utf-8", "replace")
+                texts += [html.unescape("".join(_A_T.findall(chunk))) for chunk in xml.split("</a:p>")]
+                names.update(html.unescape(n) for n in _SHAPE_NAME.findall(xml))
+    except (zipfile.BadZipFile, OSError, KeyError, RuntimeError, ValueError):
+        return None
+    slots = set()
+    for n in range(1, MAX_FILL + 1):
+        token = numbered_token(placeholder, n)
+        if (token and any(token in t for t in texts)) or (shape_name and f"{shape_name}{n}" in names):
+            slots.add(n)
+    if (placeholder and any(placeholder in t for t in texts)) or (shape_name and shape_name in names):
+        slots.add(1)  # 예전 템플릿의 {{내용}} / '내용' 은 1번
+    return slots
 
 
 def prayer_template_names(cfg: ConfigManager) -> list[str] | None:
@@ -284,7 +321,7 @@ class WorshipBuilder:
             pcfg = self.cfg.get("ppt")
             jobs = []
             for it, p in zip(req.items, paths):
-                title = f"{it.label} {it.display_value if it.kind in (KIND_SERMON, KIND_CCM) else it.value}".strip()
+                title = f"{it.label} {it.display_value if it.kind in (KIND_SERMON, KIND_CCM, KIND_CUSTOM) else it.value}".strip()
                 jobs.append(MergeJob(source=p, title=title, fill_values=it.fill_values,
                                      warn_missing=it.kind not in (KIND_HYMN, KIND_CCM)))
 

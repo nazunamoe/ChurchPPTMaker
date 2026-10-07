@@ -12,8 +12,8 @@ from typing import Any, Callable
 import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, bible_sources, filter_bibles, search_names, short_source, split_bible
-from models import (KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, MAX_FILL,
-                    ServiceItem, ccm_title, make_item, numbered_token, validate_item)
+from models import (CUSTOM_TEXT_KEYS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON,
+                    MAX_FILL, ServiceItem, ccm_title, make_item, numbered_token, validate_item)
 from worship_builder import PPT_EXTS
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
@@ -429,14 +429,18 @@ class BibleField(ctk.CTkFrame):
 
 # ---------------------------------------------------------------- 항목 입력 다이얼로그
 class ItemDialog(_Modal):
-    """기도/찬송/말씀/설교/CCM/사용자 지정 입력. 필수값 미입력 시 에러 창."""
+    """기도/찬송/말씀/설교/CCM/사용자 지정 입력. 필수값 미입력 시 에러 창.
+    item 이 있으면 수정, initial 이 있으면 그 값으로 채운 새 항목 추가 (예: 템플릿 목록에서 고른 PPT).
+    사용자 지정은 내용1~3 칸을 항상 보여 주고, fill_slots(템플릿 이름) → 템플릿에 있는 입력 자리 번호(모르면 None)를 안내한다."""
     CCM_ROWS = 10
 
     def __init__(self, master, kind: str, item: ServiceItem | None = None,
                  template_names: list[str] | None = None, bible_values: list[str] | None = None,
                  default_bible: str = "", ccm_files: list[str] | None = None,
-                 prayer_names: list[str] | None = None):
+                 prayer_names: list[str] | None = None, initial: ServiceItem | None = None,
+                 fill_slots: Callable[[str], set[int] | None] | None = None, slot_names: list[str] | None = None):
         editing = item is not None
+        item = item or initial
         super().__init__(master, f"{KIND_LABELS[kind]} {'수정' if editing else '추가'}")
         self.kind = kind
         self.options = dict(item.options) if item else {}
@@ -447,6 +451,11 @@ class ItemDialog(_Modal):
                      text_color=KIND_COLORS[kind]).grid(row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(14, 8))
 
         self.label_widget = None
+        self.text_entries: dict[int, ctk.CTkEntry] = {}  # 사용자 지정 내용2·3 입력칸
+        self._text_labels: dict[int, ctk.CTkLabel] = {}
+        self._fill_slots = fill_slots
+        self._slot_names = slot_names or [f"{{{{내용{n}}}}}" for n in range(1, MAX_FILL + 1)]
+        self._slots_job = None
         self.bible_widget = None
         self.preacher_entry = None
         self.ccm_listbox = None
@@ -457,8 +466,9 @@ class ItemDialog(_Modal):
         if kind == KIND_CUSTOM:
             self._lbl(body, row, "호출할 PPT 이름 *")
             self.label_widget = ctk.CTkComboBox(body, width=260, values=template_names or [], font=font(13),
-                                                dropdown_font=font(13))
+                                                dropdown_font=font(13), command=lambda _: self._update_custom_slots())
             self.label_widget.set(item.label if item else "")
+            self.label_widget.bind("<KeyRelease>", lambda e: self._schedule_custom_slots())
             self.label_widget.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
             row += 1
         if kind == KIND_PRAYER:
@@ -479,7 +489,7 @@ class ItemDialog(_Modal):
             KIND_HYMN: ("찬송가 장 *", "예: 29  또는  29장"),
             KIND_BIBLE: ("성경 구절 *", "예: 창1:1-5, 롬1-3"),
             KIND_SERMON: ("설교 제목 *", "예: 믿음의 사람"),
-            KIND_CUSTOM: ("오른쪽 문구 (선택)", "예: 인도자"),
+            KIND_CUSTOM: ("내용1", "예: 인도자 (선택)"),
         }.get(kind, (None, None))
         if prompt:
             self._lbl(body, row, prompt)
@@ -513,9 +523,21 @@ class ItemDialog(_Modal):
                          font=font(11), text_color=TEXT2).grid(row=row, column=0, columnspan=2, padx=16, sticky="w")
             row += 1
         if kind == KIND_CUSTOM:
-            ctk.CTkLabel(body, text="템플릿 폴더에서 이 이름의 PPT 를 찾아 호출합니다.",
-                         font=font(11), text_color=TEXT2).grid(row=row, column=0, columnspan=2, padx=16, sticky="w")
+            # 내용2·3 칸 (내용1 = 위의 value_entry). 템플릿에 자리가 없어도 항상 보여 줌 — 어떤 자리가 있는지는 아래 안내
+            for n, key in CUSTOM_TEXT_KEYS.items():
+                lbl = ctk.CTkLabel(body, text=f"내용{n}", font=font(13), text_color=TEXT, anchor="w", width=130)
+                lbl.grid(row=row, column=0, padx=16, pady=6, sticky="w")
+                e = ctk.CTkEntry(body, width=260, placeholder_text="(선택)", font=font(13))
+                if self.options.get(key):
+                    e.insert(0, self.options[key])
+                e.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
+                self.text_entries[n] = e
+                self._text_labels[n] = lbl
+                row += 1
+            self.slot_hint = ctk.CTkLabel(body, text="", font=font(11), text_color=TEXT2, justify="left")
+            self.slot_hint.grid(row=row, column=0, columnspan=2, padx=16, sticky="w")
             row += 1
+            self._update_custom_slots()
         ctk.CTkFrame(body, width=1, height=8, fg_color="transparent").grid(row=row, column=0)
 
         btns = ctk.CTkFrame(self, fg_color="transparent")
@@ -525,7 +547,30 @@ class ItemDialog(_Modal):
         self.bind_return(self._ok)
 
     def on_shown(self):
-        (self.label_widget if self.kind == KIND_CUSTOM else self.value_entry).focus_set()
+        # 사용자 지정은 템플릿이 이미 정해졌으면(목록에서 고름·수정) 내용 칸부터
+        custom_named = self.kind == KIND_CUSTOM and self.label_widget.get().strip()
+        (self.label_widget if self.kind == KIND_CUSTOM and not custom_named else self.value_entry).focus_set()
+
+    # ---- 사용자 지정: 템플릿에 있는 {{내용n}} 자리에 맞춰 입력칸 보이기
+    def _schedule_custom_slots(self):
+        if self._slots_job:
+            self.after_cancel(self._slots_job)
+        self._slots_job = self.after(250, self._update_custom_slots)  # 이름을 입력하는 동안 매 키마다 파일을 읽지 않도록
+
+    def _update_custom_slots(self):
+        self._slots_job = None
+        name = self.label_widget.get().strip()
+        slots = self._fill_slots(name) if (self._fill_slots and name) else set()
+        tokens = "~".join((self._slot_names[0], self._slot_names[-1]))
+        if not name:
+            text = f"템플릿 폴더에서 이 이름의 PPT 를 찾아 호출합니다.\n내용1~3 은 템플릿의 {tokens} 자리에 들어갑니다."
+        elif slots is None:
+            text = "이 템플릿 형식(.ppt)은 입력 자리를 미리 확인할 수 없습니다."
+        elif slots:
+            text = "템플릿에서 찾은 입력 자리: " + ", ".join(self._slot_names[n - 1] for n in sorted(slots))
+        else:
+            text = "템플릿에 입력 자리가 없습니다.\n내용1 은 순서 목록 오른쪽에만 표시됩니다."
+        self.slot_hint.configure(text=text)
 
     # ---- CCM: 파일명이 정형화돼 있지 않으므로 CCM 폴더의 파일을 이름으로 검색해 고른다 (항목 값 = 상대 경로)
     def _build_ccm(self, body, row: int, files: list[str], current: str):
@@ -622,6 +667,8 @@ class ItemDialog(_Modal):
                 self.options.pop("bible", None)
         if self.preacher_entry is not None:
             self.options["preacher"] = self.preacher_entry.get()
+        for n, e in self.text_entries.items():
+            self.options[CUSTOM_TEXT_KEYS[n]] = e.get()
         value = self._ccm_value() if self.ccm_listbox is not None else self.value_entry.get()
         item = make_item(self.kind, label, value, self.options)
         err = validate_item(item)
@@ -743,7 +790,10 @@ class SettingsDialog(_Modal):
 
         self.placeholder = numbered_row("치환 토큰", p.get("text_placeholder"), numbered_token)
         self.shape_name = numbered_row("텍스트 상자 이름", p.get("text_shape_name"), lambda b, n: f"{b}{n}")
-        ctk.CTkLabel(body, text="기본형에 번호를 붙여 사용합니다. 1번: 기도자 이름·찬송 장·사용자 지정 문구·설교 제목 / 2번: 설교자.\n"
+        # 이 안내가 설정 창에서 가장 긴 줄이라 창 너비를 정한다 → 기존 둘째 줄(약 550)보다 길어지지 않게 나눠 쓸 것
+        ctk.CTkLabel(body, text="기본형에 번호를 붙여 사용합니다.\n"
+                                "  1번: 기도자 이름 · 찬송 장 · 설교 제목 · 사용자 지정 내용1\n"
+                                "  2번: 설교자 · 사용자 지정 내용2      3번: 사용자 지정 내용3\n"
                                 "토큰이 없으면 같은 이름의 텍스트 상자에 입력합니다. 번호 없는 기본형은 1번으로 취급합니다(예전 템플릿 호환).\n"
                                 "공통 토큰: {{교회이름}} {{날짜}} {{예배종류}}",
                      font=font(11), text_color=TEXT2, justify="left").grid(

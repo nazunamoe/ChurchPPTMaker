@@ -17,15 +17,16 @@ import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, Bible2PPTError, parse_references
 from config_manager import MAX_PRESETS, ConfigManager, PresetManager, save_worship_to_text, load_worship_from_text
-from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, ServiceItem, make_item,
-                    validate_item)
+from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
+                    KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, make_item, numbered_token, validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
                         TEXT2, BibleField, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog,
                         accent_button, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
-from worship_builder import (BuildError, BuildRequest, WorshipBuilder, list_ccm_files, list_ppt_files, output_filename,
-                             output_conflict, prayer_template_names, sermon_template, validate_filename_format)
+from worship_builder import (BuildError, BuildRequest, WorshipBuilder, find_template, list_ccm_files, list_ppt_files,
+                             output_conflict, output_filename, prayer_template_names, sermon_template,
+                             template_fill_slots, validate_filename_format)
 
 APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
@@ -622,7 +623,7 @@ class App(ctk.CTk):
                 self.items.insert(idx, self.items.pop(data))
                 self._render_list()
         elif kind == "file":
-            self._insert(ServiceItem(KIND_CUSTOM, data), idx)
+            self._add_template(data, idx)
 
     def _on_drag_click(self, payload):
         kind, data = payload
@@ -635,11 +636,32 @@ class App(ctk.CTk):
     def _template_names(self) -> list[str]:
         return [p.stem for p in list_ppt_files(self.cfg.resolve_path("template_dir"))]
 
-    def _dialog(self, kind: str, item: ServiceItem | None = None) -> ServiceItem | None:
+    def _dialog(self, kind: str, item: ServiceItem | None = None,
+                initial: ServiceItem | None = None) -> ServiceItem | None:
         ccm = list_ccm_files(self.cfg.resolve_path("ccm_dir")) if kind == KIND_CCM else None
         prayer = prayer_template_names(self.cfg) if kind == KIND_PRAYER else None
+        token = self.cfg.get("ppt", "text_placeholder") or ""
         return ItemDialog(self, kind, item, template_names=self._template_names(), bible_values=self.bible_values,
-                          default_bible=self.bible_field.get().strip(), ccm_files=ccm, prayer_names=prayer).show()
+                          default_bible=self.bible_field.get().strip(), ccm_files=ccm, prayer_names=prayer,
+                          initial=initial, fill_slots=self._custom_slots,
+                          slot_names=[numbered_token(token, n) for n in range(1, MAX_FILL + 1)] if token else None).show()
+
+    def _custom_slots(self, name: str) -> set[int] | None:
+        """템플릿 폴더의 name PPT 에 있는 텍스트 입력 자리 번호 (파일이 없으면 빈 집합, 형식상 알 수 없으면 None)."""
+        path = find_template(self.cfg.resolve_path("template_dir"), name)
+        if path is None:
+            return set()
+        return template_fill_slots(path, self.cfg.get("ppt", "text_placeholder") or "",
+                                   self.cfg.get("ppt", "text_shape_name") or "")
+
+    def _add_template(self, stem: str, idx: int | None = None):
+        """템플릿 목록에서 고른 PPT 를 사용자 지정 항목으로 추가. 템플릿에 {{내용n}} 자리가 있으면 내용을 입력받는다."""
+        initial = ServiceItem(KIND_CUSTOM, stem)
+        if self._custom_slots(stem):
+            initial = self._dialog(KIND_CUSTOM, initial=initial)
+            if initial is None:  # 취소
+                return
+        self._insert(initial, idx)
 
     def _can_add(self, kind: str) -> bool:
         """새 항목을 추가하기 전에 필요한 설정이 됐는지 확인 (안 됐으면 에러 창)."""
@@ -746,7 +768,7 @@ class App(ctk.CTk):
 
     def _on_file_double_click(self, e):
         if (got := self._file_at(e)) is not None:
-            self._insert(ServiceItem(KIND_CUSTOM, got[1]))
+            self._add_template(got[1])
 
     def _select_file(self, stem: str):
         self.selected_file = stem
@@ -759,7 +781,7 @@ class App(ctk.CTk):
         if not self.selected_file:
             messagebox.showerror("선택 필요", "추가할 템플릿 파일을 먼저 선택해 주세요.", parent=self)
             return
-        self._insert(ServiceItem(KIND_CUSTOM, self.selected_file))
+        self._add_template(self.selected_file)
 
     def _choose_folder(self, key: str):
         path = filedialog.askdirectory(parent=self, initialdir=self.path_vars[key].get(), mustexist=True)

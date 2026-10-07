@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-KIND_CUSTOM = "custom"   # 왼쪽 이름의 PPT 호출 (+선택 문구)
+KIND_CUSTOM = "custom"   # 왼쪽 이름의 PPT 호출 (+선택 문구: 내용1=value, 내용2·3=options text2·text3)
 KIND_PRAYER = "prayer"   # 기도 템플릿 폴더에서 label 이름의 PPT 호출 + 기도자 이름 입력
 KIND_HYMN = "hymn"       # 오른쪽 장 번호로 찬송가 폴더에서 검색
 KIND_BIBLE = "bible"     # Bible2PPT 로 구절 PPT 생성
@@ -13,6 +13,7 @@ KIND_SERMON = "sermon"   # 설교.pptx 호출 + 설교 제목({{내용1}})·설�
 KIND_CCM = "ccm"         # CCM 폴더에서 검색해 고른 파일 (value = CCM 폴더 기준 상대 경로)
 
 MAX_FILL = 3             # 항목당 텍스트 입력칸 수 ({{내용1}} ~ {{내용3}})
+CUSTOM_TEXT_KEYS = {2: "text2", 3: "text3"}  # 사용자 지정 항목의 {{내용2}}·{{내용3}} 값 (options 키). 1번은 value
 
 # 결과 파일 이름 형식 (프리셋별로 다르게 저장 가능). {항목} 자리에 값이 들어감 — worship_builder.output_filename
 FILENAME_FIELDS = ("날짜", "년", "월", "일", "교회이름", "예배종류")
@@ -49,6 +50,8 @@ class ServiceItem:
 
     @property
     def display_value(self) -> str:
+        if self.kind == KIND_CUSTOM:
+            return " · ".join(v for v in self.fill_values if v) or "—"
         if self.kind == KIND_SERMON:
             return " · ".join(v for v in (self.value, self.options.get("preacher", "")) if v) or "—"
         if self.kind == KIND_CCM and self.value:
@@ -60,7 +63,9 @@ class ServiceItem:
         """템플릿의 {{내용1}}~{{내용N}} 에 들어갈 값 (빈 값은 입력하지 않음)."""
         if self.kind == KIND_SERMON:
             return [self.value, self.options.get("preacher", "")]
-        if self.kind in (KIND_PRAYER, KIND_HYMN, KIND_CUSTOM):
+        if self.kind == KIND_CUSTOM:
+            return [self.value, *(self.options.get(k, "") for k in CUSTOM_TEXT_KEYS.values())]
+        if self.kind in (KIND_PRAYER, KIND_HYMN):
             return [self.value]
         return []
 
@@ -115,6 +120,12 @@ def make_item(kind: str, label: str, value: str, options: dict | None = None) ->
         label = "설교"
         options = dict(options or {})
         options["preacher"] = str(options.get("preacher", "")).strip()
+    elif kind == KIND_CUSTOM:
+        options = dict(options or {})
+        for k in CUSTOM_TEXT_KEYS.values():  # 빈 칸은 저장하지 않음
+            v = str(options.pop(k, "")).strip()
+            if v:
+                options[k] = v
     return ServiceItem(kind, label, value, dict(options or {}))
 
 
@@ -157,12 +168,17 @@ def export_to_text(items: list[ServiceItem], church_name: str = "", worship_type
     lines.append("")
 
     for item in items:
-        # [kind]label|value|역본(말씀) 또는 설교자(설교)
+        # [kind]label|value|역본(말씀) 또는 설교자(설교) 또는 내용2|내용3(사용자 지정)
         opt_str = ""
         if item.kind == KIND_BIBLE and "bible" in item.options:
             opt_str = f"|{item.options['bible']}"
         elif item.kind == KIND_SERMON:
             opt_str = f"|{item.options.get('preacher', '')}"
+        elif item.kind == KIND_CUSTOM:
+            extra = [item.options.get(k, "") for k in CUSTOM_TEXT_KEYS.values()]
+            while extra and not extra[-1]:
+                extra.pop()
+            opt_str = "".join(f"|{v}" for v in extra)
 
         lines.append(f"[{item.kind}]{item.label}|{item.value}{opt_str}")
 
@@ -203,6 +219,9 @@ def import_from_text(text: str) -> tuple[list[ServiceItem], dict[str, str]]:
                     opts["bible"] = parts[2].strip()
                 elif kind == KIND_SERMON and len(parts) > 2:
                     opts["preacher"] = parts[2].strip()
+                elif kind == KIND_CUSTOM and len(parts) > 2:
+                    for k, v in zip(CUSTOM_TEXT_KEYS.values(), parts[2].split("|")):
+                        opts[k] = v.strip()
 
                 # 기본 검증/정규화 적용 (검증 실패 항목은 건너뜀)
                 item = make_item(kind, label, value, opts)
