@@ -7,8 +7,11 @@ from __future__ import annotations
 import datetime as dt
 import math
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -24,9 +27,9 @@ from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS
                         accent_button, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
-from worship_builder import (BuildError, BuildRequest, WorshipBuilder, find_template, list_ccm_files, list_ppt_files,
-                             output_conflict, output_filename, prayer_template_names, sermon_template,
-                             template_fill_slots, validate_filename_format)
+from worship_builder import (PPT_EXTS, BuildError, BuildRequest, WorshipBuilder, find_template, list_ccm_files,
+                             list_ppt_files, output_conflict, output_filename, prayer_template_names, sanitize_filename,
+                             sermon_template, template_fill_slots, validate_filename_format)
 
 APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
@@ -85,6 +88,37 @@ def _disable_full_redraw_on_resize(win: tk.Misc):
         pass
 
 
+def _double_click_ms() -> int:
+    """Windows 더블클릭 간격(ms). 순서 행 알약은 한 번 클릭=수정, 두 번=원본 열기라 이만큼 기다렸다가 수정 창을 띄운다."""
+    try:
+        import ctypes
+        return max(200, min(int(ctypes.windll.user32.GetDoubleClickTime()), 500))
+    except (AttributeError, OSError):
+        return 400
+
+
+def _send_to_recycle_bin(path: Path) -> str | None:
+    """파일을 휴지통으로 이동 (실수로 지워도 되살릴 수 있게). 실패하면 오류 메시지."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR),
+                        ("pTo", wintypes.LPCWSTR), ("fFlags", ctypes.c_uint16), ("fAnyOperationsAborted", wintypes.BOOL),
+                        ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wintypes.LPCWSTR)]
+
+        FO_DELETE, FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 3, 0x4, 0x10, 0x40, 0x400
+        op = SHFILEOPSTRUCTW(wFunc=FO_DELETE, pFrom=str(path) + "\0",  # 목록은 NUL 두 개로 끝나야 함
+                             fFlags=FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI)
+        rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    except (AttributeError, OSError) as e:
+        return f"휴지통으로 옮기지 못했습니다: {e}"
+    if rc != 0 or op.fAnyOperationsAborted or path.exists():
+        return "휴지통으로 옮기지 못했습니다. 파일이 PowerPoint 에서 열려 있으면 닫고 다시 시도해 주세요."
+    return None
+
+
 def _powerpoint_exe() -> Path | None:
     """레지스트리 App Paths 에서 POWERPNT.EXE 경로 (Show 동사가 없을 때 대체용)."""
     try:
@@ -122,6 +156,8 @@ class App(ctk.CTk):
         self.building = False
         self._save_job = None
         self._calendar: CalendarPopup | None = None
+        self._pending_click: tuple[int, str] | None = None  # 순서 알약 한 번 클릭 → (행, 수정 창 예약 after id)
+        self._bible_preview = False  # 말씀 더블클릭으로 Bible2PPT 실행 중 (PowerPoint 를 쓰므로 생성과 동시에 하지 않음)
 
         self.drag = DragController(self, self._on_drag_hover, self._on_drag_drop, self._on_drag_click)
 
@@ -369,6 +405,8 @@ class App(ctk.CTk):
         self.file_count = ctk.CTkLabel(head, text="", font=font(12), text_color=TEXT2)
         self.file_count.pack(side="left", padx=8)
         secondary_button(head, "↻", self._refresh_files, width=32).pack(side="right")
+        ctk.CTkLabel(head, text="끌어다 놓기 · 더블클릭으로 추가", font=font(11), text_color=TEXT2).pack(
+            side="right", padx=(0, 8))
         frow = ctk.CTkFrame(tc, fg_color="transparent")
         frow.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         frow.grid_columnconfigure(1, weight=1)
@@ -395,8 +433,13 @@ class App(ctk.CTk):
         self._style_file_listbox()
         foot = ctk.CTkFrame(tc, fg_color="transparent")
         foot.grid(row=4, column=0, sticky="ew", padx=14, pady=(6, 12))
-        ctk.CTkLabel(foot, text="끌어다 놓기 · 더블클릭으로 추가", font=font(11), text_color=TEXT2).pack(side="left")
+        # [불러오기] [열기] [삭제] [순서에 추가] — 템플릿 폴더 파일 관리
         secondary_button(foot, "순서에 추가", self._add_selected_file, width=90).pack(side="right")
+        del_btn = secondary_button(foot, "삭제", self._delete_selected_template, width=52)
+        del_btn.configure(text_color=DANGER)
+        del_btn.pack(side="right", padx=(0, 6))
+        secondary_button(foot, "열기", self._open_selected_template, width=52).pack(side="right", padx=(0, 6))
+        secondary_button(foot, "불러오기", self._import_templates, width=72).pack(side="right", padx=(0, 6))
 
         # 성경 구절 추가 (Bible2PPT 연동)
         bc = card(left)
@@ -534,6 +577,7 @@ class App(ctk.CTk):
 
     # ================================================================ 순서 목록 렌더링
     def _render_list(self):
+        self._cancel_pending_click()  # 행 번호가 바뀌므로 예약된 수정 창은 취소
         for w in self.scroll.winfo_children():
             w.destroy()
         self.row_widgets = []
@@ -560,13 +604,16 @@ class App(ctk.CTk):
 
         left = ctk.CTkButton(row, text=item.label, width=140, height=36, corner_radius=10, fg_color=CARD, bg_color=SUBTLE,
                              hover_color=BTN_HOVER, border_width=2, border_color=KIND_COLORS[item.kind],
-                             text_color=TEXT, font=font(13, "bold"), command=lambda i=idx: self._edit_item(i))
+                             text_color=TEXT, font=font(13, "bold"), command=lambda i=idx: self._on_pill_click(i))
         left.pack(side="left")
-        tk.Frame(row, height=max(1, scaled(self, 1.5)), bg=mode_color(PILL_BORDER)).pack(side="left", fill="x", expand=True)
+        line = tk.Frame(row, height=max(1, scaled(self, 1.5)), bg=mode_color(PILL_BORDER))
+        line.pack(side="left", fill="x", expand=True)
+        for w in (row, line):  # 알약 밖(행 빈 곳·연결선) 더블클릭도 원본 열기
+            w.bind("<Double-Button-1>", lambda e, i=idx: self.after_idle(lambda: self._open_item(i)))
         right = ctk.CTkButton(row, text=item.display_value, width=170, height=36, corner_radius=10, fg_color=CARD,
                               bg_color=SUBTLE, hover_color=BTN_HOVER, border_width=1, border_color=PILL_BORDER,
                               text_color=TEXT if item.display_value != "—" else TEXT2, font=font(13),
-                              command=lambda i=idx: self._edit_item(i))
+                              command=lambda i=idx: self._on_pill_click(i))
         right.pack(side="left")
 
         tools = tk.Frame(row, bg=bg)
@@ -721,8 +768,88 @@ class App(ctk.CTk):
         if idx == len(self.items) - 1:
             self.after(30, lambda: self.scroll._parent_canvas.yview_moveto(1.0))
 
-    def _edit_item(self, idx: int):
+    # ---- 순서 알약: 한 번 클릭 = 수정 창, 두 번 클릭 = 원본 PPT 열기
+    # CTkButton 은 누를 때마다 command 를 부르므로 더블클릭 간격만큼 기다렸다가 두 번째 클릭이 없으면 수정 창을 연다.
+    def _on_pill_click(self, idx: int):
         if self.drag.dragging:
+            return
+        pending = self._pending_click
+        self._cancel_pending_click()
+        if pending is not None and pending[0] == idx:
+            self._open_item(idx)
+            return
+        self._pending_click = (idx, self.after(_double_click_ms(), lambda: self._run_pending_click(idx)))
+
+    def _run_pending_click(self, idx: int):
+        self._pending_click = None
+        self._edit_item(idx)
+
+    def _cancel_pending_click(self):
+        if self._pending_click is not None:
+            self.after_cancel(self._pending_click[1])
+            self._pending_click = None
+
+    def _open_item(self, idx: int):
+        """순서 항목의 원본을 PowerPoint 로 연다. 기도·설교·사용자 지정 = 템플릿, 찬송·CCM = 그 PPT,
+        말씀 = Bible2PPT 로 구절 PPT 를 만들어 연다."""
+        if not 0 <= idx < len(self.items):
+            return
+        item = self.items[idx]
+        if item.kind == KIND_BIBLE:
+            self._open_bible(item)
+            return
+        path, problem = WorshipBuilder(self.cfg, lambda m: None, lambda v, m: None).resolve_item(item)
+        if path is None:
+            messagebox.showerror("열 수 없습니다", problem or "PPT 파일을 찾지 못했습니다.", parent=self)
+            return
+        self._open_ppt(path)
+
+    def _open_ppt(self, path: Path) -> bool:
+        """PPT 를 PowerPoint 로 열어 수정 (기본 '열기' 동작 = 편집 모드)."""
+        if path.suffix.lower() not in PPT_EXTS or not path.is_file():  # PPT 가 아닌 파일을 실행하지 않도록
+            messagebox.showerror("열 수 없습니다", f"PPT 파일이 아닙니다:\n{path}", parent=self)
+            return False
+        try:
+            os.startfile(path)
+        except OSError as e:
+            messagebox.showerror("열 수 없습니다", f"파일을 열 수 없습니다.\n{path}\n\n{e}", parent=self)
+            return False
+        self._set_status(f"PowerPoint 로 열었습니다: {path.name} — 수정 후 저장하면 다음 생성부터 반영됩니다.")
+        return True
+
+    def _open_bible(self, item: ServiceItem):
+        """말씀 구절을 Bible2PPT 로 만들어 연다. 결과는 임시 폴더(%TEMP%\\ChurchPPTMaker_말씀)에 저장."""
+        if self.building or self._bible_preview:
+            messagebox.showerror("잠시 후 다시", "PPT 를 만드는 중입니다. 끝난 뒤 다시 시도해 주세요.", parent=self)
+            return
+        builder = WorshipBuilder(self.cfg, lambda m: None, lambda v, m: None)
+        if (err := builder.check_bible()) is not None:
+            messagebox.showerror("Bible2PPT 설정 필요", err, parent=self)
+            return
+        out_dir = Path(tempfile.gettempdir()) / "ChurchPPTMaker_말씀"
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for old in out_dir.glob("*.pptx"):  # 하루 지난 미리보기는 정리 (열려 있으면 건너뜀)
+                if time.time() - old.stat().st_mtime > 86400:
+                    old.unlink(missing_ok=True)
+        except OSError:
+            pass
+        out = out_dir / f"{sanitize_filename('말씀 ' + item.value)}_{dt.datetime.now():%H%M%S}.pptx"
+        self._bible_preview = True
+        self._set_status(f"Bible2PPT 로 '{item.value}' 만드는 중…")
+
+        def done(result, err):
+            self._bible_preview = False
+            if err:
+                self._set_status("성경 PPT 만들기 실패")
+                messagebox.showerror("Bible2PPT", str(err), parent=self)
+                return
+            self._open_ppt(Path(result))
+
+        run_in_thread(lambda: builder.generate_bible(item, out), done)
+
+    def _edit_item(self, idx: int):
+        if self.drag.dragging or not 0 <= idx < len(self.items):
             return
         item = self._dialog(self.items[idx].kind, self.items[idx])
         if item:
@@ -791,6 +918,67 @@ class App(ctk.CTk):
         lb.selection_clear(0, "end")
         if stem in self._shown_files:
             lb.selection_set(self._shown_files.index(stem))
+
+    def _selected_template(self) -> Path | None:
+        """목록에서 고른 템플릿 파일 경로 (안 골랐으면 에러 창 후 None)."""
+        path = find_template(self.cfg.resolve_path("template_dir"), self.selected_file) if self.selected_file else None
+        if path is None:
+            messagebox.showerror("선택 필요", "템플릿 파일 목록에서 파일을 먼저 선택해 주세요.", parent=self)
+        return path
+
+    def _import_templates(self):
+        """다른 곳의 PPT 를 템플릿 폴더로 복사해 목록에 추가 (원본은 그대로)."""
+        paths = filedialog.askopenfilenames(parent=self, title="템플릿으로 불러올 PPT 선택",
+                                            filetypes=[("PowerPoint", "*.pptx *.pptm *.ppt"), ("모든 파일", "*.*")])
+        if not paths:
+            return
+        tdir = self.cfg.resolve_path("template_dir")
+        try:
+            tdir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            messagebox.showerror("불러오기", f"템플릿 폴더를 만들 수 없습니다:\n{tdir}\n\n{e}", parent=self)
+            return
+        added, errors = [], []
+        for raw in paths:
+            src = Path(raw)
+            if src.suffix.lower() not in PPT_EXTS:
+                errors.append(f"{src.name}: PPT 파일(.pptx/.pptm/.ppt)이 아닙니다")
+                continue
+            dest = tdir / src.name
+            if dest.resolve() == src.resolve():
+                continue  # 이미 템플릿 폴더에 있는 파일
+            if dest.exists() and not messagebox.askyesno(
+                    "불러오기", f"템플릿 폴더에 '{src.name}' 이 이미 있습니다. 덮어쓸까요?", parent=self):
+                continue
+            try:
+                shutil.copy2(src, dest)
+                added.append(src.stem)
+            except OSError as e:
+                errors.append(f"{src.name}: {e}")
+        self._refresh_files()
+        if added:
+            self._select_file(added[-1])
+            self._set_status(f"템플릿 {len(added)}개를 불러왔습니다: {', '.join(added)}")
+        if errors:
+            messagebox.showerror("불러오기", "다음 파일을 불러오지 못했습니다:\n\n" + "\n".join(errors), parent=self)
+
+    def _open_selected_template(self):
+        if (path := self._selected_template()) is not None:
+            self._open_ppt(path)
+
+    def _delete_selected_template(self):
+        path = self._selected_template()
+        if path is None:
+            return
+        if not messagebox.askyesno("템플릿 삭제", f"'{path.name}' 을(를) 템플릿 폴더에서 삭제할까요?\n"
+                                   "파일은 휴지통으로 이동합니다.", icon="warning", parent=self):
+            return
+        if (err := _send_to_recycle_bin(path)) is not None:
+            messagebox.showerror("템플릿 삭제", err, parent=self)
+            return
+        self.selected_file = None
+        self._refresh_files()
+        self._set_status(f"삭제됨(휴지통): {path.name}")
 
     def _add_selected_file(self):
         if not self.selected_file:
@@ -1117,6 +1305,9 @@ class App(ctk.CTk):
     # ================================================================ 생성
     def _build(self):
         if self.building:
+            return
+        if self._bible_preview:  # Bible2PPT 와 병합이 동시에 PowerPoint 를 쓰지 않도록
+            messagebox.showerror("잠시 후 다시", "말씀 PPT 를 만드는 중입니다. 끝난 뒤 다시 시도해 주세요.", parent=self)
             return
         church = self.church_entry.get().strip()
         worship = self.worship_entry.get().strip()

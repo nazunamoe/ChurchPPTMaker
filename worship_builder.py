@@ -236,48 +236,53 @@ class WorshipBuilder:
         self.progress = progress
 
     # 사전 점검: 생성 전에 UI 에서 누락 파일을 한 번에 알려주기 위함
+    def resolve_item(self, it: ServiceItem) -> tuple[Path | None, str | None]:
+        """항목 하나의 원본 PPT → (경로, 문제). 말씀은 생성할 때 만들어지므로 (None, None).
+        생성 전 점검과 순서 목록 더블클릭(원본 열기)이 같은 규칙으로 파일을 찾도록 한 곳에 둔다."""
+        if it.kind == KIND_BIBLE:
+            return None, None
+        if it.kind == KIND_HYMN:
+            p = find_hymn(self.cfg.resolve_path("hymn_dir"), it.value)
+            return p, None if p else f"찬송 '{it.value}' — 찬송가 폴더에서 PPT 를 찾지 못함"
+        if it.kind == KIND_CCM:
+            p = find_ccm(self.cfg.resolve_path("ccm_dir"), it.value)
+            return p, None if p else f"CCM '{it.display_value}' — CCM 폴더에서 PPT 를 찾지 못함"
+        if it.kind == KIND_PRAYER:
+            p = find_template(self.cfg.resolve_path("prayer_dir"), it.label)
+            return p, None if p else f"'{it.label}' — 기도 템플릿 폴더에 '{it.label}.pptx' 없음"
+        if it.kind == KIND_SERMON:
+            p = sermon_template(self.cfg)
+            if not self.cfg.get("item_templates", "sermon_file", ""):
+                return None, "설교 — ⚙ 설정에서 설교 템플릿 PPT 를 지정해 주세요"
+            return p, None if p else ("설교 — 설교 템플릿 PPT 를 찾을 수 없음: "
+                                      f"{self.cfg.get('item_templates', 'sermon_file')}")
+        p = find_template(self.cfg.resolve_path("template_dir"), it.label)
+        return p, None if p else f"'{it.label}' — 템플릿 폴더에 '{it.label}.pptx' 없음"
+
+    def check_bible(self) -> str | None:
+        """말씀 생성에 필요한 설정 문제 (Bible2PPT exe·성경 템플릿). 없으면 None."""
+        try:
+            self._bible().check()
+        except Bible2PPTError as e:
+            return str(e)
+        return bible_template(self.cfg)[1]
+
+    def generate_bible(self, it: ServiceItem, output: Path) -> Path:
+        """말씀 항목 → Bible2PPT 로 output 에 PPT 생성 (항목 역본 → 설정 기본 역본 → Bible2PPT 마지막 선택값)."""
+        bcfg = self.cfg.get("bible2ppt")
+        return self._bible().generate(it.value, output, bible=it.options.get("bible") or bcfg.get("bible") or None,
+                                      template=bible_template(self.cfg)[0], lines=bcfg.get("lines"))
+
     def resolve(self, items: list[ServiceItem]) -> tuple[list[Path | None], list[str]]:
-        tdir = self.cfg.resolve_path("template_dir")
-        hdir = self.cfg.resolve_path("hymn_dir")
-        cdir = self.cfg.resolve_path("ccm_dir")
-        pdir = self.cfg.resolve_path("prayer_dir")
         paths: list[Path | None] = []
         problems: list[str] = []
         for idx, it in enumerate(items, 1):
-            if it.kind == KIND_BIBLE:
-                paths.append(None)  # 생성 시 Bible2PPT 가 만든다
-                continue
-            if it.kind == KIND_HYMN:
-                p = find_hymn(hdir, it.value)
-                if not p:
-                    problems.append(f"{idx}. 찬송 '{it.value}' — 찬송가 폴더에서 PPT 를 찾지 못함")
-            elif it.kind == KIND_CCM:
-                p = find_ccm(cdir, it.value)
-                if not p:
-                    problems.append(f"{idx}. CCM '{it.display_value}' — CCM 폴더에서 PPT 를 찾지 못함")
-            elif it.kind == KIND_PRAYER:
-                p = find_template(pdir, it.label)
-                if not p:
-                    problems.append(f"{idx}. '{it.label}' — 기도 템플릿 폴더에 '{it.label}.pptx' 없음")
-            elif it.kind == KIND_SERMON:
-                p = sermon_template(self.cfg)
-                if not self.cfg.get("item_templates", "sermon_file", ""):
-                    problems.append(f"{idx}. 설교 — ⚙ 설정에서 설교 템플릿 PPT 를 지정해 주세요")
-                elif not p:
-                    problems.append(f"{idx}. 설교 — 설교 템플릿 PPT 를 찾을 수 없음: "
-                                    f"{self.cfg.get('item_templates', 'sermon_file')}")
-            else:
-                p = find_template(tdir, it.label)
-                if not p:
-                    problems.append(f"{idx}. '{it.label}' — 템플릿 폴더에 '{it.label}.pptx' 없음")
+            p, problem = self.resolve_item(it)
+            if problem:
+                problems.append(f"{idx}. {problem}")
             paths.append(p)
-        if any(it.kind == KIND_BIBLE for it in items):
-            try:
-                self._bible().check()
-            except Bible2PPTError as e:
-                problems.append(f"말씀 — {e}")
-            if (err := bible_template(self.cfg)[1]) is not None:
-                problems.append(f"말씀 — {err}")
+        if any(it.kind == KIND_BIBLE for it in items) and (err := self.check_bible()) is not None:
+            problems.append(f"말씀 — {err}")
         return paths, problems
 
     def _bible(self) -> Bible2PPT:
@@ -296,7 +301,6 @@ class WorshipBuilder:
         if (err := output_conflict(self.cfg, output, paths)) is not None:
             raise BuildError(err)
         tmp = Path(tempfile.mkdtemp(prefix="ChurchPPT_"))
-        bcfg = self.cfg.get("bible2ppt")
         n_bible = sum(1 for it in req.items if it.kind == KIND_BIBLE)
         try:
             # 1) Bible2PPT 로 성경 PPT 생성 (PowerPoint 를 쓰므로 병합 전에 순차 실행)
@@ -307,12 +311,7 @@ class WorshipBuilder:
                 self.progress(0.4 * done / max(n_bible, 1), f"성경 PPT 생성 중: {it.value}")
                 self.log(f"Bible2PPT: {it.value}")
                 try:
-                    paths[idx] = self._bible().generate(
-                        it.value, tmp / f"bible_{idx:02d}.pptx",
-                        bible=it.options.get("bible") or bcfg.get("bible") or None,
-                        template=bible_template(self.cfg)[0],
-                        lines=bcfg.get("lines"),
-                    )
+                    paths[idx] = self.generate_bible(it, tmp / f"bible_{idx:02d}.pptx")
                 except (Bible2PPTError, ValueError) as e:
                     raise BuildError(f"말씀 '{it.value}' 생성 실패:\n{e}") from e
                 done += 1

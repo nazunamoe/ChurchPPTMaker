@@ -83,8 +83,16 @@ ChurchPPTMaker/
   상단 둘째 줄은 최소 창 폭(1000)에서도 미리보기가 보이도록 입력칸 폭을 줄여 둠(출력 180, 형식 230).
   `App.path_vars`(폴더 키 → 표시 경로)는 상단·좌측 양쪽에서 쓰므로 `__init__` 에서 만든다.
 - 좌측 템플릿 파일 목록: 클릭=선택, 더블클릭=맨 아래 추가, 순서 목록으로 드래그=해당 위치 삽입(사용자 지정 항목).
+  아래 버튼 [불러오기](다른 곳의 PPT 를 템플릿 폴더로 **복사**, 같은 이름은 덮어쓰기 확인) [열기](PowerPoint 로 편집)
+  [삭제](확인 후 **휴지통**으로 이동 — `main._send_to_recycle_bin`, SHFileOperationW+FOF_ALLOWUNDO) [순서에 추가].
+  버튼 4개가 들어가도록 '끌어다 놓기 · 더블클릭으로 추가' 안내는 카드 제목 줄로 옮김.
   글자 크기 `main.FILE_FONT_SIZE`(13.2 = 기본 12의 110%, 줄 높이도 따라 커짐).
-- 순서 행: `⋮⋮` 손잡이로 드래그 재정렬, ▲▼ 이동, ✕ 개별 삭제, **오른쪽 값(알약) 클릭 시 수정**.
+- 순서 행: `⋮⋮` 손잡이로 드래그 재정렬, ▲▼ 이동, ✕ 개별 삭제, **알약 클릭 시 수정, 더블클릭 시 원본 PPT 열기**
+  (`App._open_item`: 기도·설교·사용자 지정=템플릿, 찬송·CCM=그 PPT — 파일 찾기는 생성과 같은 `WorshipBuilder.resolve_item`,
+  말씀=`generate_bible` 로 `%TEMP%\ChurchPPTMaker_말씀` 에 만들어 열기, 하루 지난 파일은 정리).
+  CTkButton 은 클릭마다 command 를 부르므로 `_on_pill_click` 이 Windows 더블클릭 간격(최대 500ms)만큼 수정 창을 미뤘다가
+  같은 행이 다시 눌리면 열기로 바꾼다. 행 빈 곳·연결선은 `<Double-Button-1>`. 목록을 다시 그리면 예약 취소.
+  말씀 열기(Bible2PPT)와 생성은 둘 다 PowerPoint 를 쓰므로 동시에 하지 않음(`_bible_preview`/`building`).
 - 하단 팔레트 버튼(기도/찬송/말씀/설교/CCM/사용자 지정)을 순서 목록으로 **드래그&드롭**하면 놓은 위치에 삽입, 단순 클릭은 맨 아래 추가.
   - 추가 시 입력 다이얼로그: 기도→기도 종류(기도 폴더 PPT 중 선택)+기도자 이름, 찬송→찬송가 장, 말씀→구절, 설교→설교 제목+설교자 (**미입력 시 에러**)
   - CCM→CCM 폴더 파일 검색(검색칸 + tk.Listbox, `bible_bridge.search_names`: 공백 AND·초성) 후 선택 (**미선택 시 에러**)
@@ -273,6 +281,8 @@ Bible2PPT.exe <성경 구절...> [옵션]
 - 성경 템플릿(`-t`)은 존재하는 **.pptx 만** (`worship_builder.bible_template`, `Bible2PPT.generate`, 설정 저장).
   Bible2PPT 는 자기 PowerPoint 세션에서 열어 이 프로그램의 `AutomationSecurity` 가 미치지 않으므로 .pptm 등 매크로 형식 금지.
 - `os.startfile` 로 폴더를 열 때는 `is_dir()` 확인 후에만 (설정이 실행 파일을 가리키게 조작되면 그 파일이 실행됨).
+  PPT 를 열 때(`App._open_ppt`)는 확장자가 `.pptx/.pptm/.ppt` 이고 실제 파일일 때만.
+- 템플릿 삭제는 영구 삭제하지 않고 휴지통으로(되돌릴 수 있게), 삭제 전 확인 창 필수.
 - 텍스트 파일 불러오기는 `MAX_TEXT_IMPORT_BYTES`(1MB) 이하만. `bible2ppt.bible_list` 의 문자열이 아닌 값은 시작 시 버림.
 - 남은 위험(코드로 막을 수 없음): COM 으로 연 PPT 는 보호된 보기 없이 열린다 → 매크로는 막지만 PowerPoint 자체 취약점을 노린
   파일은 막지 못함. 출처를 알 수 없는 PPT 는 템플릿·찬송가·CCM 폴더에 넣지 않도록 안내. 빌드 패키지 버전은 `>=` 라 고정되지 않음.
