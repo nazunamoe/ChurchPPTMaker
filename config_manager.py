@@ -43,6 +43,7 @@ DEFAULT_CONFIG: dict = {
         "text_placeholder": "{{내용}}",
         "text_shape_name": "내용",
         "open_after_build": True,
+        "start_slideshow": False,  # 생성 후 열 때 바로 슬라이드 쇼로 시작
         "merge_mode": "source_formatting",  # source_formatting | windowless
     },
 }

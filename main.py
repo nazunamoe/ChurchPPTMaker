@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import subprocess
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -36,6 +37,18 @@ def _set_app_user_model_id():
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ChurchPPTMaker.App")
     except (AttributeError, OSError):
         pass
+
+
+def _powerpoint_exe() -> Path | None:
+    """레지스트리 App Paths 에서 POWERPNT.EXE 경로 (Show 동사가 없을 때 대체용)."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\powerpnt.exe") as k:
+            p = Path(winreg.QueryValue(k, None))
+        return p if p.is_file() else None
+    except OSError:
+        return None
 
 
 class App(ctk.CTk):
@@ -267,13 +280,24 @@ class App(ctk.CTk):
         self.progress.pack(fill="x", pady=(4, 0))
         secondary_button(bar, "로그", self._show_log, width=60).grid(row=0, column=1, padx=(0, 8))
         self.open_after = ctk.BooleanVar(value=bool(self.cfg.get("ppt", "open_after_build")))
+        self.slideshow = ctk.BooleanVar(value=bool(self.cfg.get("ppt", "start_slideshow")))
         ctk.CTkCheckBox(bar, text="생성 후 열기", variable=self.open_after, font=font(12), checkbox_width=20,
-                        checkbox_height=20, fg_color=ACCENT,
-                        command=lambda: self.cfg.set("ppt", "open_after_build", self.open_after.get())).grid(
-            row=0, column=2, padx=8)
+                        checkbox_height=20, fg_color=ACCENT, command=self._on_open_after).grid(row=0, column=2, padx=8)
+        self.slideshow_cb = ctk.CTkCheckBox(
+            bar, text="슬라이드 쇼로 시작", variable=self.slideshow, font=font(12), checkbox_width=20,
+            checkbox_height=20, fg_color=ACCENT,
+            command=lambda: self.cfg.set("ppt", "start_slideshow", self.slideshow.get()))
+        self.slideshow_cb.grid(row=0, column=3, padx=8)
+        self._on_open_after(save=False)
         self.build_btn = accent_button(bar, "예배 PPT 병합 및 생성", self._build, width=220, height=42,
                                        font=font(15, "bold"))
-        self.build_btn.grid(row=0, column=3, padx=(8, 16), pady=12)
+        self.build_btn.grid(row=0, column=4, padx=(8, 16), pady=12)
+
+    def _on_open_after(self, save: bool = True):
+        """'슬라이드 쇼로 시작'은 '생성 후 열기'가 켜져 있을 때만 선택 가능."""
+        if save:
+            self.cfg.set("ppt", "open_after_build", self.open_after.get())
+        self.slideshow_cb.configure(state="normal" if self.open_after.get() else "disabled")
 
     # ================================================================ 순서 목록 렌더링
     def _render_list(self):
@@ -470,6 +494,26 @@ class App(ctk.CTk):
         self.path_vars[key].set(str(self.cfg.resolve_path(key)))
         if key == "template_dir":
             self._refresh_files()
+
+    def _open_result(self, path):
+        """생성된 PPT 열기. 슬라이드 쇼 옵션이면 PowerPoint 의 Show 동작(POWERPNT.EXE /s)으로 바로 쇼 시작."""
+        if self.slideshow.get():
+            try:
+                os.startfile(path, "show")  # .pptx 에 등록된 Show 동사 = 탐색기 우클릭 [쇼]
+                return
+            except OSError as e:
+                exe = _powerpoint_exe()
+                if exe:
+                    try:
+                        subprocess.Popen([str(exe), "/s", str(path)])
+                        return
+                    except OSError:
+                        pass
+                self._log(f"⚠ 슬라이드 쇼로 열지 못해 일반 열기로 대신합니다: {e}")
+        try:
+            os.startfile(path)
+        except OSError as e:
+            messagebox.showerror("열기 실패", f"생성된 파일을 열 수 없습니다.\n{path}\n\n{e}", parent=self)
 
     def _open_folder(self, key: str):
         path = self.cfg.resolve_path(key)
@@ -708,7 +752,7 @@ class App(ctk.CTk):
             warns = [l for l in self.log_lines if "⚠" in l]
             self._set_progress(1, f"완료: {result.name}" + (f"  (경고 {len(warns)}건 — 로그 확인)" if warns else ""))
             if self.open_after.get():
-                os.startfile(result)
+                self._open_result(result)
             elif messagebox.askyesno("생성 완료", f"생성되었습니다.\n{result}\n\n폴더를 열까요?", parent=self):
                 os.startfile(result.parent)
 

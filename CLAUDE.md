@@ -61,7 +61,7 @@ ChurchPPTMaker/
 │  [구절][역본▼][추가]    │ └──────────────────────────────────────────────┘ │
 │                         │ [기도] [찬송] [말씀] [사용자 지정]  ← 드래그&드롭   │
 ├─────────────────────────┴───────────────────────────────────────────────────┤
-│ 상태 메시지 / 진행바                      [✓ 생성 후 열기] [예배 PPT 병합 및 생성] │
+│ 상태 메시지 / 진행바  [로그] [✓ 생성 후 열기] [☐ 슬라이드 쇼로 시작] [예배 PPT 병합 및 생성] │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 - 날짜: 입력칸 + 📅 아이콘(달력 팝업, 날짜 클릭 시 입력, 다시 누르거나 바깥 클릭/Esc 시 닫힘) + [금일 지정](오늘 날짜).
@@ -135,10 +135,12 @@ Bible2PPT.exe <성경 구절...> [옵션]
   "paths": {"template_dir": "templates", "hymn_dir": "hymns", "output_dir": "output"},
   "bible2ppt": {"exe_path": "", "bible": "", "template": "", "lines": null, "timeout_sec": 180,
                 "bible_list": []},
-  "ppt": {"text_placeholder": "{{내용}}", "text_shape_name": "내용", "open_after_build": true,
+  "ppt": {"text_placeholder": "{{내용}}", "text_shape_name": "내용", "open_after_build": true, "start_slideshow": false,
           "merge_mode": "source_formatting"}
 }
 ```
+- `start_slideshow`: 생성 후 열 때 `os.startfile(path, "show")`(= .pptx 의 Show 동사, `POWERPNT.EXE /s`)로 바로 쇼 시작.
+  Show 동사가 없으면 App Paths 의 POWERPNT.EXE `/s`, 그래도 실패하면 일반 열기 + 로그 경고. `open_after_build` 가 꺼지면 비활성.
 - 상대 경로는 프로그램 폴더 기준. 누락 키는 기본값으로 자동 병합. 교회 이름/예배 종류/폴더는 메인 UI에서 바로 저장됨, 나머지는 ⚙ 설정.
 
 ## 9. 프리셋 규칙 (presets.json)
