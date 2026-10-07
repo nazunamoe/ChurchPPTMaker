@@ -244,7 +244,9 @@ class Bible2PPT:
             if b and b.strip():
                 args += ["-b", safe_bible_arg(b)]
         if template:
-            args += ["-t", str(template)]
+            if Path(template).suffix.lower() != ".pptx" or not Path(template).is_file():
+                raise Bible2PPTError(f"성경 템플릿은 존재하는 .pptx 파일이어야 합니다:\n{template}")
+            args += ["-t", str(Path(template).resolve())]  # 절대 경로 → '-' 로 시작해 옵션으로 해석될 수 없음
         if lines is not None and 0 <= int(lines) <= 9:
             args += ["-l", str(int(lines))]
 

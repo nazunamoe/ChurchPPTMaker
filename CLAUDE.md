@@ -237,15 +237,24 @@ Bible2PPT.exe <성경 구절...> [옵션]
   `창 높이 - 목록 높이 + 목록 MIN_FILE_ROWS(4)줄 높이` 로 계산해 지정 (CTk 위젯의 reqheight 는 실제보다 커서 쓰지 않음).
   왼쪽 열에서 세로로 늘고 주는 행은 템플릿 목록뿐이라는 전제 — 왼쪽 패널에 가변 높이 요소를 추가하면 함께 고칠 것.
 
-## 11-1. 보안 규칙 (2026-10-07 점검)
+## 11-1. 보안 규칙 (2026-10-07 점검, v1.0.3 기능 추가 후 재점검)
 - COM 으로 연 파일은 **보호된 보기 없이** 열리고, 자동화 기본값(`AutomationSecurity=1`)은 매크로를 허용한다(실측).
   → `PptEngine` 이 작업 동안 `AutomationSecurity=3`(강제 비활성)으로 바꾸고, `DisplayAlerts` 와 함께 종료 시 원래 값으로 복원.
 - 외부 프로그램 실행은 `subprocess` 리스트 인자만(`shell=True` 금지). Bible2PPT 경로는 **`.exe` 만 허용**
   (.bat/.cmd 는 cmd.exe 가 인자를 재해석해 `&` 등으로 명령 주입 가능). `-b` 값은 `safe_bible_arg` 로 `-` 시작·제어 문자 거부.
   구절은 `_REF_RE` 로 검증돼 옵션처럼 시작할 수 없다.
 - Bible2PPT stdout 이 알려준 경로는 지정한 출력 폴더 안의 파일만 인정.
-- 출력 파일명은 사용자가 정한 형식이라도 `sanitize_filename`(경로 구분자·제어 문자 제거, CON/NUL 등 예약어 회피)으로만 만들고,
-  결과 경로가 원본 PPT 와 같으면 생성 거부(원본 덮어쓰기 방지).
+- 출력 파일명은 사용자가 정한 형식이라도 `sanitize_filename`(경로 구분자·제어 문자 제거, 이름 `MAX_FILENAME_STEM`=150자 제한,
+  예약어 회피 — CON/NUL/COM¹/CONIN$ 등, `con.txt` 처럼 확장자가 붙어도 장치로 해석되므로 첫 `.` 앞부분으로 판단)으로만 만든다.
+- `worship_builder.output_conflict`: 출력 폴더가 템플릿·기도·찬송가·CCM 폴더와 같거나 그 안이면 거부(파일 이름 형식을 바꿀 수 있어
+  이번 생성에 쓰지 않는 원본도 같은 이름으로 덮어쓸 수 있음), 결과 경로가 이번 원본·설교 템플릿·성경 템플릿과 같거나
+  심볼릭 링크면 거부. 출력 폴더 지정(📁) 때와 생성 전(UI·`build`) 모두 확인.
+- 성경 템플릿(`-t`)은 존재하는 **.pptx 만** (`worship_builder.bible_template`, `Bible2PPT.generate`, 설정 저장).
+  Bible2PPT 는 자기 PowerPoint 세션에서 열어 이 프로그램의 `AutomationSecurity` 가 미치지 않으므로 .pptm 등 매크로 형식 금지.
+- `os.startfile` 로 폴더를 열 때는 `is_dir()` 확인 후에만 (설정이 실행 파일을 가리키게 조작되면 그 파일이 실행됨).
+- 텍스트 파일 불러오기는 `MAX_TEXT_IMPORT_BYTES`(1MB) 이하만. `bible2ppt.bible_list` 의 문자열이 아닌 값은 시작 시 버림.
+- 남은 위험(코드로 막을 수 없음): COM 으로 연 PPT 는 보호된 보기 없이 열린다 → 매크로는 막지만 PowerPoint 자체 취약점을 노린
+  파일은 막지 못함. 출처를 알 수 없는 PPT 는 템플릿·찬송가·CCM 폴더에 넣지 않도록 안내. 빌드 패키지 버전은 `>=` 라 고정되지 않음.
 - config.json / presets.json 은 외부에서 수정될 수 있는 입력으로 취급: 기본값과 타입이 다른 값은 무시, 잘못된 프리셋/항목은 버림,
   `options` 는 문자열 값만 유지.
 

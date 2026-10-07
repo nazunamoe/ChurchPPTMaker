@@ -11,6 +11,7 @@ from models import DEFAULT_FILENAME_FORMAT, KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, 
 
 MAX_PRESETS = 10
 MAX_PRESET_NAME = 10
+MAX_TEXT_IMPORT_BYTES = 1_000_000  # 예배 순서 텍스트 파일 불러오기 최대 크기 (다른 사람이 준 파일일 수 있음)
 
 
 def app_dir() -> Path:
@@ -131,6 +132,9 @@ class ConfigManager:
         if isinstance(old, str) and old.strip() and "prayer_dir" not in (raw.get("paths") or {}):
             self.data["paths"]["prayer_dir"] = old.strip()
         self.data["item_templates"].pop("prayer_dir", None)
+        # 외부에서 고친 설정의 역본 목록에 문자열이 아닌 값이 있으면 화면(검색·표시)에서 오류가 나므로 걸러 냄
+        bl = self.data["bible2ppt"].get("bible_list")
+        self.data["bible2ppt"]["bible_list"] = [x for x in bl if isinstance(x, str)] if isinstance(bl, list) else []
         self.save()
         for key in ("template_dir", "hymn_dir", "ccm_dir", "prayer_dir", "output_dir"):
             try:
@@ -258,6 +262,8 @@ def save_worship_to_text(path: Path, items: list[ServiceItem], metadata: dict) -
 def load_worship_from_text(path: Path) -> tuple[list[ServiceItem], dict]:
     """텍스트 파일에서 예배 순서를 읽어옴."""
     from models import import_from_text
+    if path.stat().st_size > MAX_TEXT_IMPORT_BYTES:
+        raise ValueError(f"파일이 너무 큽니다 (최대 {MAX_TEXT_IMPORT_BYTES // 1_000_000}MB). 예배 순서 텍스트 파일이 맞는지 확인해 주세요.")
     with open(path, "r", encoding="utf-8-sig") as f:
         text = f.read()
     return import_from_text(text)

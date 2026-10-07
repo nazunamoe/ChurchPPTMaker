@@ -848,6 +848,14 @@ class SettingsDialog(_Modal):
             self._show_page(self.PAGES[0])
             messagebox.showerror("입력 오류", "Bible2PPT 경로는 .exe 실행 파일이어야 합니다.", parent=self)
             return
+        tpl_raw = self.tpl.get().strip()
+        if tpl_raw:
+            tp = self.cfg.resolve_file(tpl_raw)
+            if tp.suffix.lower() != ".pptx" or not tp.is_file():
+                self._show_page(self.PAGES[0])
+                messagebox.showerror("입력 오류", "성경 템플릿은 존재하는 .pptx 파일이어야 합니다\n"
+                                     f"(매크로가 들어갈 수 있는 .pptm 등은 사용할 수 없음):\n{tpl_raw}", parent=self)
+                return
         sermon_raw = self.sermon_file.get().strip()
         if sermon_raw:
             sp = self.cfg.resolve_file(sermon_raw)
@@ -857,7 +865,7 @@ class SettingsDialog(_Modal):
                 return
         lines = self.lines.get()
         b = self.cfg.get("bible2ppt")
-        b.update(exe_path=self.exe.get().strip(), bible=self.bible.get().strip(), template=self.tpl.get().strip(),
+        b.update(exe_path=self.exe.get().strip(), bible=self.bible.get().strip(), template=tpl_raw,
                  lines=None if lines == "프로그램 설정" else int(lines), timeout_sec=timeout,
                  # 현재 exe 로 불러온 목록만 캐시 (exe 가 바뀌었는데 아직 못 불러왔으면 비움 → 메인에서 다시 불러옴)
                  bible_list=self.bible_values if self._loaded_for is not None and self._loaded_for == self._exe() else [])

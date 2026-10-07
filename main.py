@@ -25,7 +25,7 @@ from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, KIND_COLORS
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
 from worship_builder import (BuildError, BuildRequest, WorshipBuilder, list_ccm_files, list_ppt_files, output_filename,
-                             prayer_template_names, sermon_template, validate_filename_format)
+                             output_conflict, prayer_template_names, sermon_template, validate_filename_format)
 
 APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
@@ -765,6 +765,11 @@ class App(ctk.CTk):
         path = filedialog.askdirectory(parent=self, initialdir=self.path_vars[key].get(), mustexist=True)
         if not path:
             return
+        if key == "output_dir":
+            probe = Path(path) / "_.pptx"  # 이 폴더에 결과를 저장해도 원본을 덮어쓰지 않는지 미리 확인
+            if (err := output_conflict(self.cfg, probe)) is not None:
+                messagebox.showerror("출력 폴더", err, parent=self)
+                return
         self.cfg.set("paths", key, path)
         self.path_vars[key].set(str(self.cfg.resolve_path(key)))
         if key == "template_dir":
@@ -792,7 +797,14 @@ class App(ctk.CTk):
 
     def _open_folder(self, key: str):
         path = self.cfg.resolve_path(key)
-        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        # 설정 파일이 고쳐져 폴더 대신 실행 파일 등을 가리키면 startfile 이 그것을 실행하므로 폴더일 때만 연다
+        if not path.is_dir():
+            messagebox.showerror("폴더 열기", f"폴더를 찾을 수 없습니다:\n{path}", parent=self)
+            return
         os.startfile(path)
 
     def _add_bible_from_form(self):
@@ -1102,6 +1114,9 @@ class App(ctk.CTk):
             messagebox.showerror("파일을 찾을 수 없습니다", "\n".join(problems), parent=self)
             return
         out = self.cfg.resolve_path("output_dir") / output_filename(date, church, worship, fmt)
+        if (err := output_conflict(self.cfg, out)) is not None:
+            messagebox.showerror("저장할 수 없습니다", err, parent=self)
+            return
         if out.exists() and not messagebox.askyesno("덮어쓰기", f"이미 같은 이름의 파일이 있습니다.\n{out.name}\n\n덮어쓸까요?",
                                                      parent=self):
             return

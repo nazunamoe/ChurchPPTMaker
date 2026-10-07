@@ -22,14 +22,16 @@ class BuildError(RuntimeError):
     pass
 
 
-_RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])$", re.IGNORECASE)
+# Windows 예약 장치 이름. 확장자가 붙어도('CON.txt') 장치로 해석되므로 첫 '.' 앞부분으로 판단한다.
+_RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[0-9¹²³]|LPT[0-9¹²³])$", re.IGNORECASE)
+MAX_FILENAME_STEM = 150  # 파일 이름(확장자 제외) 최대 글자 수 — 255자·MAX_PATH 초과로 저장이 실패하지 않도록
 
 
 def sanitize_filename(text: str) -> str:
     """파일명에 쓸 수 없는 문자(경로 구분자 포함)·제어 문자를 제거 → 다른 폴더로 빠져나가는 경로 생성 방지."""
     text = "".join(c for c in text if ord(c) >= 32)
-    text = _INVALID_FN.sub("", text).strip().rstrip(". ")
-    return f"_{text}" if _RESERVED.match(text) else text
+    text = _INVALID_FN.sub("", text).strip()[:MAX_FILENAME_STEM].rstrip(". ")
+    return f"_{text}" if _RESERVED.match(text.split(".", 1)[0].rstrip(" ")) else text
 
 
 _FIELD_RE = re.compile(r"\{([^{}]*)\}")
@@ -101,6 +103,41 @@ def sermon_template(cfg: ConfigManager) -> Path | None:
     """설정의 설교 템플릿 PPT. 지정되지 않았거나 파일이 없으면 None."""
     p = cfg.resolve_file(cfg.get("item_templates", "sermon_file", ""))
     return p if p and p.is_file() and p.suffix.lower() in PPT_EXTS else None
+
+
+def bible_template(cfg: ConfigManager) -> tuple[Path | None, str | None]:
+    """설정의 성경 템플릿 → (경로, 오류). 지정 안 했으면 (None, None).
+    Bible2PPT 는 자기 PowerPoint 세션에서 이 파일을 열어 이 프로그램의 매크로 차단(AutomationSecurity)이 미치지 않으므로
+    매크로를 담을 수 없는 .pptx 만 허용한다."""
+    raw = (cfg.get("bible2ppt", "template", "") or "").strip()
+    if not raw:
+        return None, None
+    p = cfg.resolve_file(raw)
+    if p.suffix.lower() != ".pptx":
+        return None, f"성경 템플릿은 .pptx 파일만 사용할 수 있습니다: {raw}"
+    if not p.is_file():
+        return None, f"성경 템플릿 파일을 찾을 수 없습니다: {raw}"
+    return p, None
+
+
+def output_conflict(cfg: ConfigManager, output: Path, sources=()) -> str | None:
+    """결과 파일을 저장하면 원본(템플릿·찬송가·CCM·기도·설교·성경 템플릿)을 덮어쓸 수 있으면 오류 메시지.
+    파일 이름 형식을 바꿀 수 있어서, 출력 폴더가 원본 폴더면 이번 생성에 쓰지 않는 원본도 같은 이름으로 덮어쓸 수 있다."""
+    if output.is_symlink():  # 링크를 따라가 엉뚱한 파일을 덮어쓰지 않도록
+        return f"결과 파일 자리에 바로 가기(심볼릭 링크)가 있어 저장하지 않습니다:\n{output}"
+    out = output.resolve()
+    named = [(p, "원본 PPT") for p in sources if p is not None]
+    named += [(cfg.resolve_file(cfg.get("item_templates", "sermon_file", "")), "설교 템플릿"),
+              (cfg.resolve_file(cfg.get("bible2ppt", "template", "")), "성경 템플릿")]
+    for p, name in named:
+        if p is not None and p.resolve() == out:
+            return f"결과 파일 경로가 {name}와 같아 원본을 덮어쓰게 됩니다:\n{output}\n출력 폴더나 파일 이름 형식을 바꿔 주세요."
+    for key, name in (("template_dir", "템플릿"), ("prayer_dir", "기도"), ("hymn_dir", "찬송가"), ("ccm_dir", "CCM")):
+        folder = cfg.resolve_path(key).resolve()
+        if out.parent.is_relative_to(folder):
+            return (f"출력 폴더가 {name} 폴더와 같거나 그 안에 있어 원본 PPT 를 덮어쓸 수 있습니다:\n{out.parent}\n"
+                    "출력 폴더를 다른 곳으로 지정해 주세요.")
+    return None
 
 
 def find_hymn(folder: Path, value: str) -> Path | None:
@@ -202,6 +239,8 @@ class WorshipBuilder:
                 self._bible().check()
             except Bible2PPTError as e:
                 problems.append(f"말씀 — {e}")
+            if (err := bible_template(self.cfg)[1]) is not None:
+                problems.append(f"말씀 — {err}")
         return paths, problems
 
     def _bible(self) -> Bible2PPT:
@@ -217,10 +256,8 @@ class WorshipBuilder:
 
         out_dir = self.cfg.resolve_path("output_dir")
         output = out_dir / output_filename(req.date, req.church, req.worship, req.filename_format)
-        sources = {p.resolve() for p in paths if p is not None}
-        if output.resolve() in sources:
-            raise BuildError(f"결과 파일 경로가 원본 PPT 와 같아 원본을 덮어쓰게 됩니다:\n{output}\n"
-                             "출력 폴더를 템플릿/찬송가 폴더와 다른 곳으로 지정해 주세요.")
+        if (err := output_conflict(self.cfg, output, paths)) is not None:
+            raise BuildError(err)
         tmp = Path(tempfile.mkdtemp(prefix="ChurchPPT_"))
         bcfg = self.cfg.get("bible2ppt")
         n_bible = sum(1 for it in req.items if it.kind == KIND_BIBLE)
@@ -236,7 +273,7 @@ class WorshipBuilder:
                     paths[idx] = self._bible().generate(
                         it.value, tmp / f"bible_{idx:02d}.pptx",
                         bible=it.options.get("bible") or bcfg.get("bible") or None,
-                        template=self.cfg.resolve_file(bcfg.get("template", "")),
+                        template=bible_template(self.cfg)[0],
                         lines=bcfg.get("lines"),
                     )
                 except (Bible2PPTError, ValueError) as e:
