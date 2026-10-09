@@ -332,6 +332,7 @@ class App(ctk.CTk):
         # 제목 줄 빈 곳·제목 글자: 끌면 창 옮기기, 두 번 누르면 최대화/복원, 맨 위 가장자리는 크기 조절
         self._title_widgets = (bar, title)
         self._last_title_press = (0, 0, 0)
+        self._title_cursor = ""  # 지금 제목 줄 커서 (바뀔 때만 다시 지정)
         for w in self._title_widgets:
             w.bind("<ButtonPress-1>", self._on_title_press)
             w.bind("<Motion>", self._on_title_motion)
@@ -341,12 +342,20 @@ class App(ctk.CTk):
         return not self.frame.is_maximized() and y_root - self.winfo_rooty() < scaled(self, TOP_RESIZE_EDGE)
 
     def _on_title_motion(self, e):
+        """맨 위 가장자리에서만 위아래 화살표 커서. 바뀔 때만 지정하고, CTk 의 configure 를 거치지 않고 실제 Tk 위젯에 직접
+        지정한다 — CTkFrame.configure 는 무엇을 바꾸든 틀 크기를 기본값(200×배율)으로 다시 정해서, 마우스를 움직일 때마다
+        제목 줄이 69→300px 로 커졌다(실측)."""
         cursor = "sb_v_double_arrow" if self._top_edge(e.y_root) else ""
+        if cursor == self._title_cursor:
+            return
+        self._title_cursor = cursor
         for w in self._title_widgets:
-            try:
-                w.configure(cursor=cursor)
-            except (tk.TclError, ValueError):
-                pass
+            for part in (w, getattr(w, "_canvas", None), getattr(w, "_label", None)):  # CTk 위젯 안의 실제 Tk 위젯들
+                if part is not None:
+                    try:
+                        part.tk.call(part._w, "configure", "-cursor", cursor)
+                    except tk.TclError:
+                        pass
 
     def _on_title_press(self, e):
         if self._top_edge(e.y_root):
