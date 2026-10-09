@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 import customtkinter as ctk
 
-from bible_bridge import Bible2PPT, bible_sources, filter_bibles, search_names, short_source, split_bible
+from bible_bridge import Bible2PPT, bible_sources, filter_bibles, match_bible, search_names, short_source, split_bible
 from models import (BIBLE_KEYS, CUSTOM_TEXT_KEYS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON,
                     MAX_FILL, ServiceItem, ccm_title, make_item, numbered_token, validate_item)
 from worship_builder import PPT_EXTS
@@ -436,7 +436,7 @@ class ItemDialog(_Modal):
 
     def __init__(self, master, kind: str, item: ServiceItem | None = None,
                  template_names: list[str] | None = None, bible_values: list[str] | None = None,
-                 default_bible: str = "", default_bible2: str = "", ccm_files: list[str] | None = None,
+                 default_bible: str = "", default_bible2: str = "", fallback_bible: str = "", ccm_files: list[str] | None = None,
                  prayer_names: list[str] | None = None, initial: ServiceItem | None = None,
                  fill_slots: Callable[[str], set[int] | None] | None = None, slot_names: list[str] | None = None):
         editing = item is not None
@@ -458,6 +458,7 @@ class ItemDialog(_Modal):
         self._slots_job = None
         self.bible_widget = None
         self.bible2_widget = None
+        self._fallback_bible = fallback_bible.strip()  # 역본1 칸이 비었을 때 쓰는 설정의 기본 역본
         self.preacher_entry = None
         self.ccm_listbox = None
         row = 1
@@ -672,8 +673,9 @@ class ItemDialog(_Modal):
             return
         if self.bible_widget is not None:
             b1, b2 = self.bible_widget.get().strip(), self.bible2_widget.get().strip()
-            if b2 and not b1:
-                messagebox.showerror("입력 오류", "두 번째 역본을 쓰려면 첫 번째 역본도 지정해 주세요.", parent=self)
+            if b2 and not b1 and not self._fallback_bible:
+                messagebox.showerror("입력 오류", "두 번째 역본을 쓰려면 첫 번째 역본도 지정해 주세요\n"
+                                     "(또는 ⚙ 설정에서 기본 성경 역본을 지정).", parent=self)
                 return
             self.options["bible"], self.options["bible2"] = b1, b2  # 빈 값은 make_item 이 지움
         if self.preacher_entry is not None:
@@ -918,10 +920,8 @@ class SettingsDialog(_Modal):
         for field in (self.bible, self.bible2):
             field.set_values(res)
             cur = field.get().strip()
-            if cur and cur not in res:  # 예전 형식(이름만 입력)이면 목록의 같은 이름 항목으로 맞춤
-                match = next((v for v in res if v.startswith(f"{cur} · ") or v.startswith(f"{cur} [")), None)
-                if match:
-                    field.set(match)
+            if cur and (match := match_bible(cur, res)) and match != cur:  # 예전 형식(이름만 입력) → 목록 항목
+                field.set(match)
         self._show_bible_hint()
 
     def _save(self):

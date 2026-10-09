@@ -174,6 +174,16 @@ def bible_arg(entry: str) -> str:
     return entry
 
 
+def match_bible(entry: str, values: list[str]) -> str | None:
+    """직접 입력한 이름(예전 형식 포함) → 역본 목록의 같은 이름 항목 ('새번역' → '새번역 · 갓피아 [5]'). 없으면 None."""
+    entry = entry.strip()
+    if not entry:
+        return None
+    if entry in values:
+        return entry
+    return next((v for v in values if v.startswith(f"{entry} · ") or v.startswith(f"{entry} [")), None)
+
+
 def supports_cli(exe: Path) -> bool:
     """명령줄 지원 여부를 실행하지 않고 판별 (GUI 전용 버전은 인자를 무시하고 창을 띄운 채 멈춤).
     .NET Framework 어셈블리면 CLI 도움말 문자열(UTF-16)이 exe 에 그대로 들어 있으므로 그 유무로 판단.

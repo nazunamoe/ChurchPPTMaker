@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from bible_bridge import Bible2PPT, Bible2PPTError
+from bible_bridge import Bible2PPT, Bible2PPTError, bible_arg
 from config_manager import ConfigManager
 from models import (BIBLE_KEYS, DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER,
                     KIND_SERMON, MAX_FILL, ServiceItem, ccm_title, hymn_number, numbered_token)
@@ -146,14 +146,17 @@ def item_bibles(it: ServiceItem, cfg: ConfigManager) -> list[str]:
     """말씀 항목의 역본 목록 (-b 순서, 2개면 Bible2PPT 가 나란히 배치).
     항목에 역본을 지정했으면 그 역본1(비면 설정 기본 역본1)·역본2, 아니면 설정의 기본 역본1·역본2."""
     b = cfg.get("bible2ppt")
-    if any(it.options.get(k) for k in BIBLE_KEYS):
-        pair = (it.options.get("bible") or b.get("bible") or "", it.options.get("bible2") or "")
+    own = [(it.options.get(k) or "").strip() for k in BIBLE_KEYS]  # 공백뿐인 값(직접 고친 프리셋 등)은 빈 값
+    if any(own):
+        pair = (own[0] or (b.get("bible") or "").strip(), own[1])
     else:
-        pair = (b.get("bible") or "", b.get("bible2") or "")
+        pair = ((b.get("bible") or "").strip(), (b.get("bible2") or "").strip())
     out: list[str] = []
+    seen: set[str] = set()
     for v in pair:
-        v = v.strip()
-        if v and v not in out:  # 같은 역본을 두 번 넘기지 않음
+        key = bible_arg(v).casefold()  # '개역개정 · 갓피아 [1]' 과 '1', 'KJV' 와 'kjv' 는 같은 역본 → 한 번만 넘김
+        if v and key not in seen:
+            seen.add(key)
             out.append(v)
     return out
 

@@ -19,7 +19,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from bible_bridge import Bible2PPT, Bible2PPTError, parse_references
+from bible_bridge import Bible2PPT, Bible2PPTError, match_bible, parse_references
 from config_manager import MAX_PRESETS, ConfigManager, PresetManager, save_worship_to_text, load_worship_from_text
 from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
                     KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, make_item, numbered_token, validate_item)
@@ -764,7 +764,8 @@ class App(ctk.CTk):
         token = self.cfg.get("ppt", "text_placeholder") or ""
         return ItemDialog(self, kind, item, template_names=self._template_names(), bible_values=self.bible_values,
                           default_bible=self.bible_field.get().strip(),
-                          default_bible2=self.bible2_field.get().strip(), ccm_files=ccm, prayer_names=prayer,
+                          default_bible2=self.bible2_field.get().strip(),
+                          fallback_bible=self.cfg.get("bible2ppt", "bible") or "", ccm_files=ccm, prayer_names=prayer,
                           initial=initial, fill_slots=self._custom_slots,
                           slot_names=[numbered_token(token, n) for n in range(1, MAX_FILL + 1)] if token else None).show()
 
@@ -1105,8 +1106,9 @@ class App(ctk.CTk):
             messagebox.showerror("입력 오류", str(e), parent=self)
             return
         bible, bible2 = self.bible_field.get().strip(), self.bible2_field.get().strip()
-        if bible2 and not bible:
-            messagebox.showerror("입력 오류", "두 번째 역본을 쓰려면 첫 번째 역본도 지정해 주세요.", parent=self)
+        if bible2 and not bible and not (self.cfg.get("bible2ppt", "bible") or "").strip():  # 역본1 칸이 비면 기본 역본
+            messagebox.showerror("입력 오류", "두 번째 역본을 쓰려면 첫 번째 역본도 지정해 주세요\n"
+                                 "(또는 ⚙ 설정에서 기본 성경 역본을 지정).", parent=self)
             return
         item = make_item(KIND_BIBLE, "말씀", ", ".join(refs), {"bible": bible, "bible2": bible2})
         self._insert(item)
@@ -1134,13 +1136,13 @@ class App(ctk.CTk):
 
     def _set_bible_values(self, values: list[str]):
         self.bible_values = values
-        for field, key in ((self.bible_field, "bible"), (self.bible2_field, "bible2")):
+        for field in (self.bible_field, self.bible2_field):
             field.set_values(values)
             cur = field.get().strip()
-            if not cur or cur not in values:  # 비었거나 예전 형식이면 설정의 기본 역본으로 맞춤
-                default = self.cfg.get("bible2ppt", key) or ""
-                if not cur or default in values:
-                    field.set(default)
+            # 직접 입력한 이름(예전 형식)은 목록의 같은 이름 항목으로 맞춤. 목록에 없는 이름·빈 칸은 그대로 둔다
+            # (빈 역본1 = 기본 역본 사용, 빈 역본2 = 한 역본만 — 사용자가 지운 칸을 기본값으로 다시 채우지 않음)
+            if cur and (match := match_bible(cur, values)) and match != cur:
+                field.set(match)
 
     def _load_bible_list_if_needed(self):
         """exe 는 있는데 캐시된 역본 목록이 없으면 (예: 첫 실행·이전 버전 설정) 조용히 불러온다."""
@@ -1218,11 +1220,15 @@ class App(ctk.CTk):
         self.cfg.set("appearance_mode", None, mode)
 
     def _open_settings(self):
+        keys = ("bible", "bible2")
+        old = {k: self.cfg.get("bible2ppt", k) or "" for k in keys}
         if SettingsDialog(self, self.cfg).show():
             self._set_bible_values(list(self.cfg.get("bible2ppt", "bible_list") or []))
-            for field, key in ((self.bible_field, "bible"), (self.bible2_field, "bible2")):
-                if not field.get().strip():
-                    field.set(self.cfg.get("bible2ppt", key) or "")
+            # 기본 역본을 바꿨으면, 그 기본값을 그대로 쓰던(비었거나 예전 기본값인) 칸만 새 기본값으로
+            for field, k in zip((self.bible_field, self.bible2_field), keys):
+                new = self.cfg.get("bible2ppt", k) or ""
+                if new != old[k] and field.get().strip() in ("", old[k]):
+                    field.set(new)
             self._update_bible_status()
             self._load_bible_list_if_needed()  # exe 를 바꿨는데 설정 창에서 목록을 못 받았으면 다시 시도
             self._set_status("설정을 저장했습니다.")
