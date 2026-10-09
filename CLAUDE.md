@@ -37,7 +37,7 @@ ChurchPPTMaker/
 ├─ main.py             진입점 + 메인 윈도우(App), 패널 구성, 드래그&드롭, 프리셋/생성 이벤트
 ├─ ui_widgets.py       재사용 위젯: 공통 색/폰트, _Modal(창 내부 오버레이 다이얼로그), CalendarPopup, ItemDialog,
 │                      BiblePicker(역본 검색 창)/BibleField(입력칸+🔍),
-│                      SettingsDialog(2쪽: Bible2PPT·기도·설교 / 병합·텍스트), LogDialog, DragController, 스레드→UI 큐(post_to_ui/run_in_thread)
+│                      SettingsDialog(2쪽: Bible2PPT·기도·설교 / 병합·텍스트·임시 파일), TempFilesDialog, LogDialog, DragController, 스레드→UI 큐(post_to_ui/run_in_thread)
 ├─ models.py           ServiceItem 데이터 모델 + 항목 종류(KIND_*) 정의, 입력 검증
 ├─ config_manager.py   config.json / presets.json 읽기·쓰기, 기본값 병합, 프리셋 규칙 검증
 ├─ bible_bridge.py     Bible2PPT CLI 래퍼 (구절 정규화/검증, 실행, --list-bibles)
@@ -71,8 +71,8 @@ ChurchPPTMaker/
 │  [구절][역본1🔍][↻][추가]│ └──────────────────────────────────────────────┘ │
 │                         │ [기도][찬송][말씀][설교][CCM][사용자 지정] ← 드래그&드롭 │
 ├─────────────────────────┴───────────────────────────────────────────────────┤
-│ 상태 메시지 / 진행바  [로그] [✓ 생성 후 열기] [☐ 슬라이드 쇼로 시작] [예배 PPT 병합 및 생성] │
-│                              슬라이드 비율 [원본|16:9|4:3]                                  │
+│ 상태 메시지 / 진행바  [로그]     [✓ 생성 후 열기] [☐ 슬라이드 쇼로 시작] [예배 PPT 병합 및 생성] │
+│                      [임시 파일] 슬라이드 비율 [원본|16:9|4:3]    [☐ 저장 없이 임시 파일로 실행] │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 - 파일 이름: 결과 파일 이름 형식 입력칸 + [항목 ▾](tk.Menu 로 커서 위치에 `{항목}` 삽입) + [기본값] + 실시간 미리보기(잘못되면 ⚠).
@@ -208,11 +208,12 @@ Bible2PPT.exe <성경 구절...> [옵션]
   "item_templates": {"sermon_file": ""},
   "ppt": {"text_placeholder": "{{내용}}", "text_shape_name": "내용", "fill_defaults": ["", "", ""],
           "open_after_build": true, "start_slideshow": false,
-          "merge_mode": "source_formatting", "slide_size": "original"}
+          "merge_mode": "source_formatting", "slide_size": "original", "temp_mode": false, "temp_keep": 10}
 }
 ```
 - `start_slideshow`: 생성 후 열 때 `os.startfile(path, "show")`(= .pptx 의 Show 동사, `POWERPNT.EXE /s`)로 바로 쇼 시작.
-  Show 동사가 없으면 App Paths 의 POWERPNT.EXE `/s`, 그래도 실패하면 일반 열기 + 로그 경고. `open_after_build` 가 꺼지면 비활성.
+  Show 동사가 없으면 App Paths 의 POWERPNT.EXE `/s`, 그래도 실패하면 일반 열기 + 로그 경고. `open_after_build`·`temp_mode` 가 모두 꺼지면 비활성.
+- `temp_mode`/`temp_keep`: §9-2 임시 실행 모드. `temp_keep` 은 `config_manager.clean_temp_keep` 으로 1~100 정수(잘못된 값은 10).
 - 상대 경로는 프로그램 폴더 기준. 누락 키는 기본값으로 자동 병합. 교회 이름/예배 종류/파일 이름 형식/폴더는 메인 UI에서 바로 저장됨, 나머지는 ⚙ 설정.
 
 ## 9. 프리셋 규칙 (presets.json)
@@ -229,6 +230,22 @@ Bible2PPT.exe <성경 구절...> [옵션]
 - 항목(`models.FILENAME_FIELDS`): `{날짜}`(YYYY-MM-DD) `{년}` `{월}` `{일}`(0 채움, 예 `10`·`07`) `{교회이름}` `{예배종류}`. 기본 `models.DEFAULT_FILENAME_FORMAT`.
 - 값을 넣은 **전체 문자열**을 `sanitize_filename` 하고 `.pptx` 를 붙임(형식 끝의 `.pptx` 는 한 번만). 결과가 비면 기본 형식.
 - `validate_filename_format`: 빈 형식·모르는 `{항목}`·쓸 수 없는 문자뿐인 형식은 오류 → 미리보기 ⚠, 프리셋 저장·생성 시 에러 창.
+
+## 9-2. 임시 실행 모드 (worship_builder.temp_result_dir)
+- 하단 [저장 없이 임시 파일로 실행](`App.temp_mode`, 생성 버튼 바로 아래 — 옆 열에 두면 하단 바가 넓어져 상태 표시 칸이
+  약 2/3 로 줄었음)을 켜면 출력 폴더 대신 `%LOCALAPPDATA%\ChurchPPTMaker\임시` 에 `형식대로 만든 이름_시분초.pptx` 로 만들고
+  **항상 바로 연다**(슬라이드 쇼 옵션 적용, [생성 후 열기]는 잠김). 생성 버튼 글자가 '예배 PPT 임시 생성 및 실행'으로 바뀜.
+  %TEMP% 는 Windows(저장소 센스·디스크 정리)가 지울 수 있어 보관 개수를 지킬 수 없으므로 쓰지 않음.
+- 이름에 시분초(같으면 `_2`…)를 붙이는 이유: 앞서 연 임시 파일이 PowerPoint 에서 열려 있어도 다음 생성이 덮어쓰지 않게.
+  같은 이유로 덮어쓰기 확인 없음. 모드는 생성 시작 때 값으로 고정(생성 중 체크를 바꿔도 이번 생성은 그대로).
+- 보관: 임시 생성이 끝날 때마다 `prune_temp_results(ppt.temp_keep)` 가 최근 N 개만 남김(⚙ 설정 2쪽 '최대 보관 개수' 1~100,
+  설정을 저장할 때도 바로 정리). PowerPoint 에서 열려 있는 파일은 지울 수 없어 건너뛰고 다음 정리 때 다시 시도.
+  목록(`list_temp_results`)은 PowerPoint 잠금 파일 `~$이름.pptx`·링크·.pptx 외 파일을 제외.
+- 하단 [임시 파일](`TempFilesDialog`): 최근순 목록(수정 시각·이름·크기) → [열기]·[슬라이드 쇼]·[다른 이름으로 저장]·[폴더 열기].
+  저장은 출력 폴더·`_시분초` 를 뗀 이름(`saved_name_for_temp`)을 제안하고 복사(`shutil.copy2`). 임시 폴더 안(곧 정리됨)·
+  `output_conflict`(원본 폴더·원본 파일)에 걸리는 곳은 거부, 확장자는 .pptx 로 맞춤. 목록을 연 뒤 지워진 파일·임시 폴더 밖
+  경로는 `App._temp_file_ok` 가 거부.
+- `secondary_button` 은 `height` 를 덮어쓸 수 있음(하단 [로그]·[임시 파일] 은 30).
 
 ## 10. 개발 히스토리
 - 2026-10-06 v1.0: UI 초안 기반 최초 구현 (UI, 프리셋, 드래그&드롭, Bible2PPT CLI 연동, COM 병합 엔진).
@@ -249,10 +266,14 @@ Bible2PPT.exe <성경 구절...> [옵션]
     말씀 열기는 Bible2PPT 없이 생성 단계만 대체해 확인. 시작 크기 1000×892 표시, 상단 요청 너비 959 고정.
 - 2026-10-09: 말씀 역본 2개 지정(Bible2PPT `-b` 두 번 → 나란히 배치) — 메인 성경 영역·말씀 항목 입력·설정 기본 역본에 역본2 칸.
   - 검증: `-b` 인자 순서·중복 제거·기본값 대체, 텍스트 내보내기/불러오기 왕복, UI 입력(역본2만 지정 시 에러) 자동 테스트.
+    실제 Bible2PPT 로 두 역본 생성은 아직 확인 안 함. 성경 영역이 한 줄 늘어 시작 크기 1000×930.
   - 엣지 케이스 점검(25건 자동 테스트)으로 수정: 같은 역본 다른 표기 중복 전달, 공백뿐인 역본 값, 역본1 칸 비움+역본2 가
     기본 역본이 있는데도 막히던 문제, 지운 역본2 가 목록 재로드·설정 저장 때 되살아나던 문제, 직접 입력한 역본 이름이
     목록 재로드 때 기본 역본으로 덮이던 문제(역본1 은 이전부터 있던 문제).
-    실제 Bible2PPT 로 두 역본 생성은 아직 확인 안 함. 성경 영역이 한 줄 늘어 시작 크기 1000×930.
+- 2026-10-09: 저장 없이 임시 파일로 실행하는 모드, 임시 파일 최대 보관 개수 설정, [임시 파일] 목록(열기·쇼·저장) (§9-2).
+  - 검증: 실제 PowerPoint 로 임시 생성 3회(보관 2개 → 가장 오래된 것 삭제, 출력 폴더 비어 있음)·일반 생성 복귀,
+    실제 [생성] 버튼 경로(임시 폴더에 만들어 쇼로 열기), 함수 19건·UI 18건 자동 테스트(잠금 파일 제외, 열린 파일 건너뜀,
+    잘못된 보관 개수, 템플릿 폴더·임시 폴더로 저장 거부, 목록 연 뒤 삭제된 파일). 하단 바 높이 +16px(시작 1000×946).
 
 ## 11. 구현 시 주의사항 (검증된 함정)
 - **CTkToplevel 사용 금지** → `ui_widgets._Modal`(창 내부 오버레이) 상속. CTkToplevel 은 생성 때마다 `bind_all("<Button-1>")`를 누적하고
@@ -290,7 +311,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
   왼쪽 열에서 세로로 늘고 주는 행은 템플릿 목록뿐이라는 전제 — 왼쪽 패널에 가변 높이 요소를 추가하면 함께 고칠 것.
 - **시작 크기 = 최소 크기** (`main.MIN_WIDTH`=1000 × 위 최소 높이, 화면 가운데). 최소 높이는 첫 배치 뒤에야 알 수 있어
   창을 `-alpha 0` 으로 만들어 두고 `_apply_min_size` 가 크기를 맞춘 뒤 `_reveal` 로 보인다(큰 창→작은 창 깜빡임 방지).
-  계산이 실패해도 `START_REVEAL_MS`(2초) 뒤에는 반드시 보이게 함. 실측: 1000×1000 → 1000×930 로 맞춘 뒤 표시.
+  계산이 실패해도 `START_REVEAL_MS`(2초) 뒤에는 반드시 보이게 함. 실측: 1000×1000 → 1000×946 로 맞춘 뒤 표시 (역본2 줄 +38, 하단 임시 실행 체크 +16).
   첫 (투명) 창 높이 `START_MEASURE_HEIGHT` 는 왼쪽 패널보다 커야 함 — 낮으면 템플릿 목록이 0줄로 눌려 unmapped 가 되고
   `_apply_min_size` 가 재지 못해 최소 크기 없이 그대로 보인다 (역본2 줄 추가 때 820 에서 실제로 발생).
 
@@ -311,6 +332,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
 - `os.startfile` 로 폴더를 열 때는 `is_dir()` 확인 후에만 (설정이 실행 파일을 가리키게 조작되면 그 파일이 실행됨).
   PPT 를 열 때(`App._open_ppt`)는 확장자가 `.pptx/.pptm/.ppt` 이고 실제 파일일 때만.
 - 템플릿 삭제는 영구 삭제하지 않고 휴지통으로(되돌릴 수 있게), 삭제 전 확인 창 필수.
+- 임시 파일 열기·저장은 임시 폴더 바로 안의 실제 .pptx(링크 아님)만. 저장 대상도 `output_conflict` 로 원본 덮어쓰기 차단.
 - 텍스트 파일 불러오기는 `MAX_TEXT_IMPORT_BYTES`(1MB) 이하만. `bible2ppt.bible_list` 의 문자열이 아닌 값은 시작 시 버림.
 - 남은 위험(코드로 막을 수 없음): COM 으로 연 PPT 는 보호된 보기 없이 열린다 → 매크로는 막지만 PowerPoint 자체 취약점을 노린
   파일은 막지 못함. 출처를 알 수 없는 PPT 는 템플릿·찬송가·CCM 폴더에 넣지 않도록 안내. 빌드 패키지 버전은 `>=` 라 고정되지 않음.

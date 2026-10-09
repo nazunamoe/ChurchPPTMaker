@@ -56,6 +56,8 @@ DEFAULT_CONFIG: dict = {
         "start_slideshow": False,  # 생성 후 열 때 바로 슬라이드 쇼로 시작
         "merge_mode": "source_formatting",  # source_formatting | windowless
         "slide_size": "original",  # 결과 슬라이드 비율: original(첫 PPT 크기) | 16:9 | 4:3
+        "temp_mode": False,  # 저장 없이 임시 파일로 만들어 바로 실행 (worship_builder.temp_result_dir)
+        "temp_keep": 10,  # 임시 파일 최대 보관 개수 (1~100, 넘으면 오래된 것부터 삭제)
     },
 }
 
@@ -64,6 +66,17 @@ def clean_fill_defaults(raw) -> list[str]:
     """빈 칸 기본값을 정확히 MAX_FILL 개의 문자열로 (외부에서 고친 설정의 잘못된 값은 빈 문자열)."""
     raw = raw if isinstance(raw, list) else []
     return [(v if isinstance(v, str) else "") for v in raw[:MAX_FILL]] + [""] * (MAX_FILL - min(len(raw), MAX_FILL))
+
+
+TEMP_KEEP_DEFAULT = 10  # 임시 파일 최대 보관 개수 (ppt.temp_keep)
+TEMP_KEEP_MAX = 100
+
+
+def clean_temp_keep(value) -> int:
+    """보관 개수를 1~TEMP_KEEP_MAX 정수로 (외부에서 고친 설정의 잘못된 값은 기본값)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return TEMP_KEEP_DEFAULT
+    return max(1, min(TEMP_KEEP_MAX, value))
 
 
 def _item(kind, label, value="", **options):
@@ -146,6 +159,7 @@ class ConfigManager:
         bl = self.data["bible2ppt"].get("bible_list")
         self.data["bible2ppt"]["bible_list"] = [x for x in bl if isinstance(x, str)] if isinstance(bl, list) else []
         self.data["ppt"]["fill_defaults"] = clean_fill_defaults(self.data["ppt"].get("fill_defaults"))
+        self.data["ppt"]["temp_keep"] = clean_temp_keep(self.data["ppt"].get("temp_keep"))
         self.save()
         for key in ("template_dir", "hymn_dir", "ccm_dir", "prayer_dir", "output_dir"):
             try:

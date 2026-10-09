@@ -6,6 +6,7 @@ import datetime as dt
 import queue
 import threading
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Any, Callable
 
@@ -14,6 +15,7 @@ import customtkinter as ctk
 from bible_bridge import Bible2PPT, bible_sources, filter_bibles, match_bible, search_names, short_source, split_bible
 from models import (BIBLE_KEYS, CUSTOM_TEXT_KEYS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON,
                     MAX_FILL, ServiceItem, ccm_title, make_item, numbered_token, validate_item)
+from config_manager import TEMP_KEEP_MAX, clean_temp_keep
 from worship_builder import PPT_EXTS
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
@@ -61,7 +63,8 @@ def font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
 
 
 def secondary_button(master, text: str, command=None, width: int = 72, **kw) -> ctk.CTkButton:
-    return ctk.CTkButton(master, text=text, command=command, width=width, height=32, corner_radius=6,
+    kw.setdefault("height", 32)
+    return ctk.CTkButton(master, text=text, command=command, width=width, corner_radius=6,
                          fg_color=BTN, hover_color=BTN_HOVER, border_width=1, border_color=BORDER,
                          text_color=TEXT, font=font(13), **kw)
 
@@ -834,6 +837,15 @@ class SettingsDialog(_Modal):
         # 기본값 칸 이름은 치환 토큰을 바꾸면 따라 바뀜 ({{내용1}} …)
         self.placeholder.bind("<KeyRelease>", lambda e: self._update_default_labels(), add="+")
         self._update_default_labels()
+
+        section("임시 파일")
+        self.temp_keep = entry(str(clean_temp_keep(p.get("temp_keep"))), width=80)
+        row("최대 보관 개수", self.temp_keep)
+        ctk.CTkLabel(body, text=f"[저장 없이 임시 파일로 실행]으로 만든 PPT 를 최근 것부터 이만큼 보관합니다 (1~{TEMP_KEEP_MAX}).\n"
+                                "넘으면 오래된 것부터 지웁니다. 하단 [임시 파일]에서 다시 열거나 저장할 수 있습니다.",
+                     font=font(11), text_color=TEXT2, anchor="w", justify="left").grid(
+            row=r, column=1, columnspan=2, sticky="w", pady=(0, 14))
+        r += 1
         self.page_seg.set(self.PAGES[0])
         self._show_page(self.PAGES[0])
 
@@ -958,6 +970,12 @@ class SettingsDialog(_Modal):
             self._show_page(self.PAGES[0])
             messagebox.showerror("입력 오류", "두 번째 기본 역본을 쓰려면 기본 성경 역본도 지정해 주세요.", parent=self)
             return
+        keep_raw = self.temp_keep.get().strip()
+        if not (keep_raw.isascii() and keep_raw.isdigit()) or not 1 <= int(keep_raw) <= TEMP_KEEP_MAX:
+            self._show_page(self.PAGES[1])
+            messagebox.showerror("입력 오류", f"임시 파일 최대 보관 개수는 1~{TEMP_KEEP_MAX} 사이 숫자로 입력해 주세요.",
+                                 parent=self)
+            return
         lines = self.lines.get()
         b = self.cfg.get("bible2ppt")
         b.update(exe_path=self.exe.get().strip(), bible=bible1, bible2=bible2, template=tpl_raw,
@@ -968,13 +986,80 @@ class SettingsDialog(_Modal):
         p = self.cfg.get("ppt")
         p.update(text_placeholder=self.placeholder.get().strip(), text_shape_name=self.shape_name.get().strip(),
                  fill_defaults=[e.get().strip() for e in self.fill_defaults],
-                 merge_mode=MERGE_MODES[self.merge_mode.get()])
+                 merge_mode=MERGE_MODES[self.merge_mode.get()], temp_keep=int(keep_raw))
         self.cfg.save()
         self.result = True
         self.destroy()
 
 
 # ---------------------------------------------------------------- 로그
+class TempFilesDialog(_Modal):
+    """[저장 없이 임시 파일로 실행]으로 만든 PPT 목록 (최근 것부터). 열기·쇼 시작·다른 이름으로 저장·폴더 열기.
+    실제 동작은 App 콜백(path → 성공 여부)이 하고, 성공하면 창을 닫는다. 목록은 tk.Listbox 하나 (CCM 선택과 같은 이유)."""
+    ROWS = 10
+
+    def __init__(self, master, files: list[Path], keep: int, on_open: Callable[[Path], bool],
+                 on_show: Callable[[Path], bool], on_save: Callable[[Path], bool], on_folder: Callable[[], None]):
+        super().__init__(master, "임시 파일 불러오기")
+        self.files = list(files)
+        self._actions = {"open": on_open, "show": on_show, "save": on_save}
+        body = card(self)
+        body.pack(fill="both", expand=True, padx=16, pady=(12, 8))
+        box = ctk.CTkFrame(body, fg_color=SUBTLE, corner_radius=8, border_width=1, border_color=BORDER)
+        box.pack(fill="both", expand=True, padx=12, pady=(12, 4))
+        self.listbox = tk.Listbox(box, height=self.ROWS, width=72, activestyle="none", borderwidth=0,
+                                  highlightthickness=0, exportselection=False, font=tk_font(self, 13),
+                                  bg=_pick(SUBTLE), fg=_pick(TEXT), selectbackground=_pick(ACCENT),
+                                  selectforeground="#FFFFFF")
+        sb = ctk.CTkScrollbar(box, command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=sb.set)
+        self.listbox.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=6)
+        sb.pack(side="right", fill="y", padx=2, pady=4)
+        for p in self.files:
+            self.listbox.insert("end", f"  {self._describe(p)}")
+        if self.files:
+            self.listbox.selection_set(0)
+            self.listbox.activate(0)
+            info = f"{len(self.files)}개 · 최근 {keep}개까지 보관 (⚙ 설정에서 변경)   ·   더블클릭 또는 Enter 로 열기"
+        else:
+            info = "임시 파일이 없습니다. 하단 [저장 없이 임시 파일로 실행]을 켜고 생성하면 여기에 쌓입니다."
+        ctk.CTkLabel(body, text=info, font=font(11), text_color=TEXT2, anchor="w").pack(
+            fill="x", padx=14, pady=(0, 10))
+        self.listbox.bind("<Double-Button-1>", lambda e: self._run("open"))
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.pack(fill="x", padx=16, pady=(4, 16))
+        secondary_button(btns, "폴더 열기", on_folder, width=88).pack(side="left")
+        actions = [accent_button(btns, "열기", lambda: self._run("open"), width=88),
+                   secondary_button(btns, "슬라이드 쇼", lambda: self._run("show"), width=96),
+                   secondary_button(btns, "다른 이름으로 저장", lambda: self._run("save"), width=128)]
+        for b in actions:
+            b.pack(side="right", padx=(8, 0))
+            if not self.files:
+                b.configure(state="disabled")
+        secondary_button(btns, "닫기", self.destroy, width=72).pack(side="right", padx=(8, 0))
+        self.bind_return(lambda: self._run("open"))
+
+    @staticmethod
+    def _describe(p: Path) -> str:
+        try:
+            st = p.stat()
+            when = dt.datetime.fromtimestamp(st.st_mtime)
+            return f"{when:%m-%d %H:%M}   {p.stem}   ({st.st_size / 1048576:.1f}MB)"
+        except OSError:
+            return p.stem
+
+    def on_shown(self):
+        self.listbox.focus_set()
+
+    def _run(self, key: str):
+        cur = self.listbox.curselection()
+        if not cur:
+            return
+        if self._actions[key](self.files[cur[0]]):
+            self.destroy()
+
+
 class LogDialog(_Modal):
     def __init__(self, master, lines: list[str]):
         super().__init__(master, "작업 로그")

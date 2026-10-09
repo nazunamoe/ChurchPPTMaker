@@ -20,17 +20,18 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, Bible2PPTError, match_bible, parse_references
-from config_manager import MAX_PRESETS, ConfigManager, PresetManager, save_worship_to_text, load_worship_from_text
+from config_manager import MAX_PRESETS, ConfigManager, clean_temp_keep, PresetManager, save_worship_to_text, load_worship_from_text
 from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
                     KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, make_item, numbered_token, validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
-                        TEXT2, BibleField, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog,
+                        TEXT2, BibleField, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog, TempFilesDialog,
                         accent_button, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
 from worship_builder import (PPT_EXTS, BuildError, BuildRequest, WorshipBuilder, find_template, list_ccm_files,
-                             list_ppt_files, output_conflict, output_filename, prayer_template_names, sanitize_filename,
-                             sermon_template, template_fill_slots, validate_filename_format)
+                             list_ppt_files, list_temp_results, output_conflict, output_filename, prayer_template_names,
+                             prune_temp_results, sanitize_filename, saved_name_for_temp, sermon_template, temp_result_dir,
+                             template_fill_slots, validate_filename_format)
 
 APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
@@ -599,18 +600,23 @@ class App(ctk.CTk):
         self.progress = ctk.CTkProgressBar(left, height=6, progress_color=ACCENT)
         self.progress.set(0)
         self.progress.pack(fill="x", pady=(4, 0))
-        secondary_button(bar, "로그", self._show_log, width=60).grid(row=0, column=1, rowspan=2, padx=(0, 8))
+        # [로그] 위 / [임시 파일](임시 실행으로 만든 PPT 다시 열기·저장) 아래
+        secondary_button(bar, "로그", self._show_log, width=76, height=30).grid(
+            row=0, column=1, padx=(0, 8), pady=(12, 2), sticky="s")
+        secondary_button(bar, "임시 파일", self._show_temp_files, width=76, height=30).grid(
+            row=1, column=1, padx=(0, 8), pady=(2, 12), sticky="n")
         self.open_after = ctk.BooleanVar(value=bool(self.cfg.get("ppt", "open_after_build")))
         self.slideshow = ctk.BooleanVar(value=bool(self.cfg.get("ppt", "start_slideshow")))
-        ctk.CTkCheckBox(bar, text="생성 후 열기", variable=self.open_after, font=font(12), checkbox_width=20,
-                        checkbox_height=20, fg_color=ACCENT, command=self._on_open_after).grid(
-            row=0, column=2, padx=8, pady=(12, 4), sticky="w")
+        self.temp_mode = ctk.BooleanVar(value=bool(self.cfg.get("ppt", "temp_mode")))
+        self.open_after_cb = ctk.CTkCheckBox(
+            bar, text="생성 후 열기", variable=self.open_after, font=font(12), checkbox_width=20,
+            checkbox_height=20, fg_color=ACCENT, command=self._on_open_after)
+        self.open_after_cb.grid(row=0, column=2, padx=8, pady=(12, 4), sticky="w")
         self.slideshow_cb = ctk.CTkCheckBox(
             bar, text="슬라이드 쇼로 시작", variable=self.slideshow, font=font(12), checkbox_width=20,
             checkbox_height=20, fg_color=ACCENT,
             command=lambda: self.cfg.set("ppt", "start_slideshow", self.slideshow.get()))
         self.slideshow_cb.grid(row=0, column=3, padx=8, pady=(12, 4), sticky="w")
-        self._on_open_after(save=False)
         # 두 체크박스 아래: 결과 슬라이드 비율 (원본 = 첫 PPT 크기)
         size_row = ctk.CTkFrame(bar, fg_color="transparent")
         size_row.grid(row=1, column=2, columnspan=2, padx=8, pady=(4, 12), sticky="w")
@@ -622,17 +628,39 @@ class App(ctk.CTk):
         self.size_seg.pack(side="left")
         self.build_btn = accent_button(bar, "예배 PPT 병합 및 생성", self._build, width=220, height=42,
                                        font=font(15, "bold"))
-        self.build_btn.grid(row=0, column=4, rowspan=2, padx=(8, 16), pady=12)
+        self.build_btn.grid(row=0, column=4, padx=(8, 16), pady=(12, 2), sticky="s")
+        # 생성 버튼 아래: 저장 없이 임시 폴더에 만들어 바로 실행 (최근 ppt.temp_keep 개 보관).
+        # 버튼 열(220)에 두어 하단 바가 넓어지지 않게 함 — 옆 열에 두면 상태 표시 칸이 약 2/3 로 줄었음
+        ctk.CTkCheckBox(bar, text="저장 없이 임시 파일로 실행", variable=self.temp_mode, font=font(12), checkbox_width=18,
+                        checkbox_height=18, fg_color=ACCENT, command=self._on_temp_mode).grid(
+            row=1, column=4, padx=(8, 16), pady=(2, 10), sticky="n")
+        self._on_temp_mode(save=False)  # 생성 버튼 글자·'생성 후 열기' 상태 맞춤
 
     def _set_slide_size(self, label: str):
         self.cfg.set("ppt", "slide_size", SLIDE_SIZE_LABELS[label])
         self._set_status("슬라이드 비율: " + ("첫 PPT 크기 그대로" if label == "원본" else label))
 
     def _on_open_after(self, save: bool = True):
-        """'슬라이드 쇼로 시작'은 '생성 후 열기'가 켜져 있을 때만 선택 가능."""
+        """'슬라이드 쇼로 시작'은 결과를 열 때('생성 후 열기' 또는 임시 실행)만 선택 가능."""
         if save:
             self.cfg.set("ppt", "open_after_build", self.open_after.get())
-        self.slideshow_cb.configure(state="normal" if self.open_after.get() else "disabled")
+        opens = self.open_after.get() or self.temp_mode.get()
+        self.slideshow_cb.configure(state="normal" if opens else "disabled")
+
+    def _on_temp_mode(self, save: bool = True):
+        """임시 실행은 항상 바로 열므로 '생성 후 열기'는 의미가 없어 잠그고, 생성 버튼 글자로 모드를 알린다."""
+        temp = self.temp_mode.get()
+        if save:
+            self.cfg.set("ppt", "temp_mode", temp)
+            self._set_status("임시 실행: 저장하지 않고 임시 파일로 만들어 바로 엽니다." if temp
+                             else "생성하면 출력 폴더에 저장합니다.")
+        self.open_after_cb.configure(state="disabled" if temp else "normal")
+        if not self.building:
+            self.build_btn.configure(text=self._build_label())
+        self._on_open_after(save=False)
+
+    def _build_label(self) -> str:
+        return "예배 PPT 임시 생성 및 실행" if self.temp_mode.get() else "예배 PPT 병합 및 생성"
 
     # ================================================================ 순서 목록 렌더링
     def _render_list(self):
@@ -1061,18 +1089,18 @@ class App(ctk.CTk):
         if key == "template_dir":
             self._refresh_files()
 
-    def _open_result(self, path):
-        """생성된 PPT 열기. 슬라이드 쇼 옵션이면 PowerPoint 의 Show 동작(POWERPNT.EXE /s)으로 바로 쇼 시작."""
-        if self.slideshow.get():
+    def _open_result(self, path, show: bool | None = None) -> bool:
+        """생성된 PPT 열기. 슬라이드 쇼(show, 생략 시 하단 옵션)면 PowerPoint 의 Show 동작(POWERPNT.EXE /s)으로 바로 쇼 시작."""
+        if self.slideshow.get() if show is None else show:
             try:
                 os.startfile(path, "show")  # .pptx 에 등록된 Show 동사 = 탐색기 우클릭 [쇼]
-                return
+                return True
             except OSError as e:
                 exe = _powerpoint_exe()
                 if exe:
                     try:
                         subprocess.Popen([str(exe), "/s", str(path)])
-                        return
+                        return True
                     except OSError:
                         pass
                 self._log(f"⚠ 슬라이드 쇼로 열지 못해 일반 열기로 대신합니다: {e}")
@@ -1080,6 +1108,73 @@ class App(ctk.CTk):
             os.startfile(path)
         except OSError as e:
             messagebox.showerror("열기 실패", f"생성된 파일을 열 수 없습니다.\n{path}\n\n{e}", parent=self)
+            return False
+        return True
+
+    # ---- 임시 실행으로 만든 PPT (worship_builder.temp_result_dir)
+    def _show_temp_files(self):
+        TempFilesDialog(self, list_temp_results(), clean_temp_keep(self.cfg.get("ppt", "temp_keep")),
+                        on_open=lambda p: self._open_temp(p, False), on_show=lambda p: self._open_temp(p, True),
+                        on_save=self._save_temp_as, on_folder=self._open_temp_folder).show()
+
+    def _temp_file_ok(self, path: Path) -> bool:
+        """목록을 연 뒤 지워졌거나(보관 개수 정리·직접 삭제) 임시 폴더 밖 파일이면 거부."""
+        try:
+            ok = (path.suffix.lower() == ".pptx" and path.is_file() and not path.is_symlink()
+                  and path.resolve().parent == temp_result_dir().resolve())
+        except OSError:
+            ok = False
+        if not ok:
+            messagebox.showerror("임시 파일", f"파일을 찾을 수 없습니다 (이미 정리되었을 수 있음):\n{path.name}", parent=self)
+        return ok
+
+    def _open_temp(self, path: Path, show: bool) -> bool:
+        if not self._temp_file_ok(path) or not self._open_result(path, show):
+            return False
+        self._set_status(f"임시 파일을 열었습니다: {path.stem}")
+        return True
+
+    def _save_temp_as(self, path: Path) -> bool:
+        """임시 파일을 원하는 곳에 복사해 저장 (기본: 출력 폴더, _시분초 를 뗀 이름)."""
+        if not self._temp_file_ok(path):
+            return False
+        out_dir = self.cfg.resolve_path("output_dir")
+        dest = filedialog.asksaveasfilename(parent=self, title="임시 파일 저장", defaultextension=".pptx",
+                                            initialdir=str(out_dir) if out_dir.is_dir() else None,
+                                            initialfile=saved_name_for_temp(path),
+                                            filetypes=[("PowerPoint", "*.pptx")])
+        if not dest:
+            return False
+        dest = Path(dest)
+        if dest.suffix.lower() != ".pptx":  # 다른 확장자로 저장하면 PowerPoint 가 열지 못함
+            dest = dest.with_name(dest.name + ".pptx")
+        try:
+            in_temp = dest.resolve().parent == temp_result_dir().resolve()
+        except OSError:
+            in_temp = False
+        if in_temp:  # 임시 폴더 안이면 보관 개수 정리 때 지워짐
+            messagebox.showerror("저장할 수 없습니다", "임시 폴더 안에는 저장할 수 없습니다 (오래되면 자동으로 지워짐).\n"
+                                 "출력 폴더 등 다른 곳을 골라 주세요.", parent=self)
+            return False
+        if (err := output_conflict(self.cfg, dest)) is not None:
+            messagebox.showerror("저장할 수 없습니다", err, parent=self)
+            return False
+        try:
+            shutil.copy2(path, dest)
+        except OSError as e:  # 같은 이름의 파일이 PowerPoint 에서 열려 있는 경우 등
+            messagebox.showerror("저장 실패", f"저장하지 못했습니다.\n{dest}\n\n{e}", parent=self)
+            return False
+        self._set_status(f"저장했습니다: {dest}")
+        return True
+
+    def _open_temp_folder(self):
+        folder = temp_result_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        if folder.is_dir():
+            os.startfile(folder)
 
     def _open_folder(self, key: str):
         path = self.cfg.resolve_path(key)
@@ -1231,7 +1326,8 @@ class App(ctk.CTk):
                     field.set(new)
             self._update_bible_status()
             self._load_bible_list_if_needed()  # exe 를 바꿨는데 설정 창에서 목록을 못 받았으면 다시 시도
-            self._set_status("설정을 저장했습니다.")
+            removed = prune_temp_results(self.cfg.get("ppt", "temp_keep"))  # 보관 개수를 줄였으면 바로 정리
+            self._set_status("설정을 저장했습니다." + (f" 오래된 임시 파일 {len(removed)}개를 지웠습니다." if removed else ""))
 
     def _schedule_save(self):
         if self._save_job:
@@ -1412,24 +1508,26 @@ class App(ctk.CTk):
         if problems:
             messagebox.showerror("파일을 찾을 수 없습니다", "\n".join(problems), parent=self)
             return
+        temp = self.temp_mode.get()  # 생성 중에 체크를 바꿔도 이번 생성은 시작할 때의 모드로
         out = self.cfg.resolve_path("output_dir") / output_filename(date, church, worship, fmt)
-        if (err := output_conflict(self.cfg, out)) is not None:
-            messagebox.showerror("저장할 수 없습니다", err, parent=self)
-            return
-        if out.exists() and not messagebox.askyesno("덮어쓰기", f"이미 같은 이름의 파일이 있습니다.\n{out.name}\n\n덮어쓸까요?",
-                                                     parent=self):
-            return
+        if not temp:  # 임시 실행은 매번 새 이름(_시분초)으로 임시 폴더에 만들므로 덮어쓰기 확인이 필요 없음
+            if (err := output_conflict(self.cfg, out)) is not None:
+                messagebox.showerror("저장할 수 없습니다", err, parent=self)
+                return
+            if out.exists() and not messagebox.askyesno("덮어쓰기", f"이미 같은 이름의 파일이 있습니다.\n{out.name}\n\n덮어쓸까요?",
+                                                         parent=self):
+                return
 
         self.building = True
         self.build_btn.configure(state="disabled", text="생성 중…")
         self.log_lines.clear()
-        self._log(f"생성 시작: {out.name}")
+        self._log(f"생성 시작: {out.stem} (임시 실행 — 저장하지 않음)" if temp else f"생성 시작: {out.name}")
         self._set_progress(0, "준비 중…")
         items = [ServiceItem.from_dict(i.to_dict()) for i in self.items]  # 작업 중 UI 변경과 분리
 
         def done(result, err):
             self.building = False
-            self.build_btn.configure(state="normal", text="예배 PPT 병합 및 생성")
+            self.build_btn.configure(state="normal", text=self._build_label())
             if err:
                 self._set_progress(0, "생성 실패")
                 self._log(f"오류: {err}")
@@ -1437,13 +1535,18 @@ class App(ctk.CTk):
                                      parent=self)
                 return
             warns = [l for l in self.log_lines if "⚠" in l]
-            self._set_progress(1, f"완료: {result.name}" + (f"  (경고 {len(warns)}건 — 로그 확인)" if warns else ""))
+            warn_text = f"  (경고 {len(warns)}건 — 로그 확인)" if warns else ""
+            if temp:  # 임시 실행: 항상 바로 열기. 나중에 [임시 파일]에서 다시 열거나 저장
+                self._set_progress(1, f"임시 실행: {result.stem} — 저장하려면 [임시 파일]에서 다른 이름으로 저장" + warn_text)
+                self._open_result(result)
+                return
+            self._set_progress(1, f"완료: {result.name}" + warn_text)
             if self.open_after.get():
                 self._open_result(result)
             elif messagebox.askyesno("생성 완료", f"생성되었습니다.\n{result}\n\n폴더를 열까요?", parent=self):
                 os.startfile(result.parent)
 
-        run_in_thread(lambda: builder.build(BuildRequest(items, church, date, worship, fmt)), done)
+        run_in_thread(lambda: builder.build(BuildRequest(items, church, date, worship, fmt, temp=temp)), done)
 
     # ================================================================ 상태 / 로그
     def _set_status(self, text: str):

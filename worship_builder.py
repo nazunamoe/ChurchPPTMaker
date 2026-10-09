@@ -1,7 +1,9 @@
 """예배 PPT 생성 파이프라인: 항목 → 원본 파일 해석 → Bible2PPT 생성 → 병합."""
 from __future__ import annotations
 
+import datetime as dt
 import html
+import os
 import re
 import shutil
 import tempfile
@@ -11,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from bible_bridge import Bible2PPT, Bible2PPTError, bible_arg
-from config_manager import ConfigManager
+from config_manager import ConfigManager, clean_temp_keep
 from models import (BIBLE_KEYS, DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER,
                     KIND_SERMON, MAX_FILL, ServiceItem, ccm_title, hymn_number, numbered_token)
 from ppt_engine import MERGE_SOURCE_FORMATTING, MergeJob, PptEngine, PptEngineError
@@ -67,6 +69,62 @@ def output_filename(date: str, church: str, worship: str, fmt: str = DEFAULT_FIL
     형식이 잘못돼 이름이 비면 기본 형식을 쓴다."""
     stem = output_stem(fmt, date, church, worship) or output_stem(DEFAULT_FILENAME_FORMAT, date, church, worship)
     return f"{stem}.pptx"
+
+
+# ---- 임시 실행 모드: 결과를 출력 폴더 대신 임시 폴더에 만들고 바로 연다. 최근 ppt.temp_keep 개만 보관
+def temp_result_dir() -> Path:
+    """임시 결과 폴더. %TEMP% 는 Windows(저장소 센스·디스크 정리)가 지울 수 있어 보관 개수를 지킬 수 없으므로
+    %LOCALAPPDATA%\\ChurchPPTMaker\\임시 (없으면 %TEMP% 아래)."""
+    base = os.environ.get("LOCALAPPDATA")
+    return (Path(base) if base else Path(tempfile.gettempdir())) / "ChurchPPTMaker" / "임시"
+
+
+def _mtime(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:  # 목록을 만드는 사이 지워짐
+        return 0.0
+
+
+def list_temp_results(folder: Path | None = None) -> list[Path]:
+    """임시 결과 PPT (최근 것부터). PowerPoint 가 열어 둔 파일 옆에 만드는 잠금 파일 '~$이름.pptx' 와 링크는 제외."""
+    folder = folder or temp_result_dir()
+    try:
+        files = [p for p in folder.glob("*.pptx")
+                 if not p.name.startswith("~$") and p.is_file() and not p.is_symlink()]
+    except OSError:
+        return []
+    return sorted(files, key=_mtime, reverse=True)
+
+
+def prune_temp_results(keep: int, folder: Path | None = None) -> list[Path]:
+    """최근 keep 개만 남기고 지운다. PowerPoint 에서 열려 있는 파일은 지울 수 없으므로 건너뜀(다음 정리 때 다시 시도)."""
+    removed = []
+    for p in list_temp_results(folder)[clean_temp_keep(keep):]:
+        try:
+            p.unlink()
+            removed.append(p)
+        except OSError:
+            pass
+    return removed
+
+
+def temp_output_path(folder: Path, date: str, church: str, worship: str, fmt: str) -> Path:
+    """임시 결과 경로: 형식대로 만든 이름 + _시분초 (앞서 연 임시 파일이 PowerPoint 에서 열려 있어도 겹치지 않게)."""
+    stem = output_filename(date, church, worship, fmt)[:-5]
+    base = f"{stem}_{dt.datetime.now():%H%M%S}"
+    out, n = folder / f"{base}.pptx", 2
+    while out.exists() or out.is_symlink():
+        out, n = folder / f"{base}_{n}.pptx", n + 1
+    return out
+
+
+_TEMP_SUFFIX = re.compile(r"_\d{6}(_\d+)?$")
+
+
+def saved_name_for_temp(path: Path) -> str:
+    """임시 파일을 저장할 때 제안할 이름 (붙였던 _시분초 를 뗌)."""
+    return f"{_TEMP_SUFFIX.sub('', path.stem) or path.stem}.pptx"
 
 
 def list_ppt_files(folder: Path, recursive: bool = False) -> list[Path]:
@@ -245,6 +303,7 @@ class BuildRequest:
     date: str
     worship: str
     filename_format: str = DEFAULT_FILENAME_FORMAT
+    temp: bool = False  # True: 출력 폴더 대신 임시 폴더에 만들고 오래된 임시 파일 정리
 
 
 class WorshipBuilder:
@@ -315,8 +374,16 @@ class WorshipBuilder:
         if problems:
             raise BuildError("다음 항목을 처리할 수 없습니다:\n\n" + "\n".join(problems))
 
-        out_dir = self.cfg.resolve_path("output_dir")
-        output = out_dir / output_filename(req.date, req.church, req.worship, req.filename_format)
+        if req.temp:
+            out_dir = temp_result_dir()
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise BuildError(f"임시 폴더를 만들 수 없습니다:\n{out_dir}\n{e}") from e
+            output = temp_output_path(out_dir, req.date, req.church, req.worship, req.filename_format)
+        else:
+            out_dir = self.cfg.resolve_path("output_dir")
+            output = out_dir / output_filename(req.date, req.church, req.worship, req.filename_format)
         if (err := output_conflict(self.cfg, output, paths)) is not None:
             raise BuildError(err)
         tmp = Path(tempfile.mkdtemp(prefix="ChurchPPT_"))
@@ -354,6 +421,10 @@ class WorshipBuilder:
                 result = eng.merge(jobs, output, {
                     "{{교회이름}}": req.church, "{{날짜}}": req.date, "{{예배종류}}": req.worship,
                 }, on_progress)
+            if req.temp:
+                removed = prune_temp_results(pcfg.get("temp_keep"), out_dir)
+                if removed:
+                    self.log(f"오래된 임시 파일 {len(removed)}개 정리 (최근 {clean_temp_keep(pcfg.get('temp_keep'))}개 보관)")
             self.progress(1.0, "완료")
             return result
         except PptEngineError as e:
