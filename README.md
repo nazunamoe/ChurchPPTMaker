@@ -317,6 +317,8 @@ pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --version-fil
   | 다른 이름으로 저장 | 원하는 곳에 저장 (기본: 출력 폴더, 시분초를 뗀 이름). 템플릿 등 원본 폴더·임시 폴더에는 저장할 수 없음 |
   | 폴더 열기 | 임시 폴더를 탐색기로 열기 |
 
+  PPT 를 만드는 중에는 임시 파일·템플릿을 PowerPoint 로 열 수 없습니다 (만드는 중인 PPT 의 슬라이드가 연 파일로 붙여질 수 있음).
+
 ---
 
 ## 7. 설정 (⚙ 설정 / config.json)

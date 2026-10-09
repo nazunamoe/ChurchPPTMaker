@@ -30,8 +30,8 @@ from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY
 from version import APP_NAME, __version__
 from worship_builder import (PPT_EXTS, BuildError, BuildRequest, WorshipBuilder, find_template, list_ccm_files,
                              list_ppt_files, list_temp_results, output_conflict, output_filename, prayer_template_names,
-                             prune_temp_results, sanitize_filename, saved_name_for_temp, sermon_template, temp_result_dir,
-                             template_fill_slots, validate_filename_format)
+                             prune_temp_results, sanitize_filename, saved_name_for_temp, sermon_template, temp_dir_conflict,
+                             temp_result_dir, template_fill_slots, validate_filename_format)
 
 APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
@@ -893,8 +893,18 @@ class App(ctk.CTk):
             return
         self._open_ppt(path)
 
+    def _busy_merging(self) -> bool:
+        """생성(병합) 중이면 에러 창 + True. 병합의 [원본 서식 유지] 붙여넣기(ExecuteMso)는 PowerPoint 의 '활성 창'에
+        붙여넣으므로, 그사이 사용자가 연 PPT 가 활성 창이 되면 그 파일에 슬라이드가 붙을 수 있다."""
+        if self.building:
+            messagebox.showerror("잠시 후 다시", "PPT 를 만드는 중에는 PowerPoint 로 파일을 열 수 없습니다.\n"
+                                 "끝난 뒤 다시 시도해 주세요.", parent=self)
+        return self.building
+
     def _open_ppt(self, path: Path) -> bool:
         """PPT 를 PowerPoint 로 열어 수정 (기본 '열기' 동작 = 편집 모드)."""
+        if self._busy_merging():
+            return False
         if path.suffix.lower() not in PPT_EXTS or not path.is_file():  # PPT 가 아닌 파일을 실행하지 않도록
             messagebox.showerror("열 수 없습니다", f"PPT 파일이 아닙니다:\n{path}", parent=self)
             return False
@@ -1079,6 +1089,14 @@ class App(ctk.CTk):
         path = filedialog.askdirectory(parent=self, initialdir=self.path_vars[key].get(), mustexist=True)
         if not path:
             return
+        try:  # 임시 폴더 안을 고르면 임시 파일 정리 때 그 안의 PPT 가 지워질 수 있음
+            in_temp = Path(path).resolve().is_relative_to(temp_result_dir().resolve())
+        except OSError:
+            in_temp = False
+        if in_temp:
+            messagebox.showerror("폴더 지정", f"임시 파일 폴더 안은 지정할 수 없습니다 (오래된 PPT 가 자동으로 지워짐):\n{path}",
+                                 parent=self)
+            return
         if key == "output_dir":
             probe = Path(path) / "_.pptx"  # 이 폴더에 결과를 저장해도 원본을 덮어쓰지 않는지 미리 확인
             if (err := output_conflict(self.cfg, probe)) is not None:
@@ -1113,6 +1131,9 @@ class App(ctk.CTk):
 
     # ---- 임시 실행으로 만든 PPT (worship_builder.temp_result_dir)
     def _show_temp_files(self):
+        if (err := temp_dir_conflict(self.cfg)) is not None:  # 목록·정리가 사용자 PPT 를 다루지 않도록
+            messagebox.showerror("임시 파일", err, parent=self)
+            return
         TempFilesDialog(self, list_temp_results(), clean_temp_keep(self.cfg.get("ppt", "temp_keep")),
                         on_open=lambda p: self._open_temp(p, False), on_show=lambda p: self._open_temp(p, True),
                         on_save=self._save_temp_as, on_folder=self._open_temp_folder).show()
@@ -1129,7 +1150,7 @@ class App(ctk.CTk):
         return ok
 
     def _open_temp(self, path: Path, show: bool) -> bool:
-        if not self._temp_file_ok(path) or not self._open_result(path, show):
+        if self._busy_merging() or not self._temp_file_ok(path) or not self._open_result(path, show):
             return False
         self._set_status(f"임시 파일을 열었습니다: {path.stem}")
         return True
@@ -1148,6 +1169,9 @@ class App(ctk.CTk):
         dest = Path(dest)
         if dest.suffix.lower() != ".pptx":  # 다른 확장자로 저장하면 PowerPoint 가 열지 못함
             dest = dest.with_name(dest.name + ".pptx")
+        if not dest.stem or sanitize_filename(dest.stem) != dest.stem:  # CON·NUL 같은 장치 이름, 너무 긴 이름 등
+            messagebox.showerror("저장할 수 없습니다", f"쓸 수 없는 파일 이름입니다:\n{dest.name}", parent=self)
+            return False
         try:
             in_temp = dest.resolve().parent == temp_result_dir().resolve()
         except OSError:
@@ -1326,7 +1350,8 @@ class App(ctk.CTk):
                     field.set(new)
             self._update_bible_status()
             self._load_bible_list_if_needed()  # exe 를 바꿨는데 설정 창에서 목록을 못 받았으면 다시 시도
-            removed = prune_temp_results(self.cfg.get("ppt", "temp_keep"))  # 보관 개수를 줄였으면 바로 정리
+            # 보관 개수를 줄였으면 바로 정리 (임시 폴더가 원본 폴더와 겹치면 정리하지 않음)
+            removed = [] if temp_dir_conflict(self.cfg) else prune_temp_results(self.cfg.get("ppt", "temp_keep"))
             self._set_status("설정을 저장했습니다." + (f" 오래된 임시 파일 {len(removed)}개를 지웠습니다." if removed else ""))
 
     def _schedule_save(self):
@@ -1510,6 +1535,9 @@ class App(ctk.CTk):
             return
         temp = self.temp_mode.get()  # 생성 중에 체크를 바꿔도 이번 생성은 시작할 때의 모드로
         out = self.cfg.resolve_path("output_dir") / output_filename(date, church, worship, fmt)
+        if temp and (err := temp_dir_conflict(self.cfg)) is not None:
+            messagebox.showerror("임시 실행을 할 수 없습니다", err, parent=self)
+            return
         if not temp:  # 임시 실행은 매번 새 이름(_시분초)으로 임시 폴더에 만들므로 덮어쓰기 확인이 필요 없음
             if (err := output_conflict(self.cfg, out)) is not None:
                 messagebox.showerror("저장할 수 없습니다", err, parent=self)

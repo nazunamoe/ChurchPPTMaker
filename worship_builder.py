@@ -6,6 +6,7 @@ import html
 import os
 import re
 import shutil
+import stat
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -79,6 +80,39 @@ def temp_result_dir() -> Path:
     return (Path(base) if base else Path(tempfile.gettempdir())) / "ChurchPPTMaker" / "임시"
 
 
+def _has_reparse_point(folder: Path) -> bool:
+    """임시 폴더나 그 위 ChurchPPTMaker 폴더가 정션·심볼릭 링크면 True.
+    링크를 따라가면 보관 개수 정리가 링크 대상(예: 문서 폴더)의 PPT 를 영구 삭제할 수 있으므로 그런 폴더는 쓰지 않는다."""
+    for p in (folder, folder.parent):
+        try:
+            st = os.lstat(p)
+        except OSError:  # 아직 없음
+            continue
+        if stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            return True
+    return False
+
+
+def temp_dir_conflict(cfg: ConfigManager) -> str | None:
+    """임시 폴더를 쓸 수 없으면 오류 메시지. 정리(prune_temp_results)는 임시 폴더의 .pptx 를 영구 삭제하므로
+    원본·출력 폴더나 설교·성경 템플릿이 그 안에 있으면(설정 파일을 직접 고친 경우 등) 사용자 PPT 가 지워질 수 있다."""
+    folder = temp_result_dir()
+    if _has_reparse_point(folder):
+        return f"임시 폴더가 바로 가기(정션·심볼릭 링크)로 되어 있어 사용하지 않습니다:\n{folder}"
+    tmp = folder.resolve()
+    for key, name in (("template_dir", "템플릿"), ("prayer_dir", "기도"), ("hymn_dir", "찬송가"), ("ccm_dir", "CCM"),
+                      ("output_dir", "출력")):
+        p = cfg.resolve_path(key).resolve()
+        if p.is_relative_to(tmp):
+            return (f"{name} 폴더가 임시 폴더 안에 있어, 임시 파일을 정리할 때 그 안의 PPT 가 지워질 수 있습니다:\n{p}\n"
+                    "폴더를 다른 곳으로 지정해 주세요.")
+    for p, name in ((cfg.resolve_file(cfg.get("item_templates", "sermon_file", "")), "설교 템플릿"),
+                    (cfg.resolve_file(cfg.get("bible2ppt", "template", "")), "성경 템플릿")):
+        if p is not None and p.resolve().is_relative_to(tmp):
+            return f"{name}이 임시 폴더 안에 있어 임시 파일을 정리할 때 지워질 수 있습니다:\n{p}\n다른 곳으로 옮겨 주세요."
+    return None
+
+
 def _mtime(p: Path) -> float:
     try:
         return p.stat().st_mtime
@@ -87,8 +121,11 @@ def _mtime(p: Path) -> float:
 
 
 def list_temp_results(folder: Path | None = None) -> list[Path]:
-    """임시 결과 PPT (최근 것부터). PowerPoint 가 열어 둔 파일 옆에 만드는 잠금 파일 '~$이름.pptx' 와 링크는 제외."""
+    """임시 결과 PPT (최근 것부터). PowerPoint 가 열어 둔 파일 옆에 만드는 잠금 파일 '~$이름.pptx' 와 링크는 제외.
+    폴더가 정션·심볼릭 링크면 빈 목록 (정리가 링크 대상의 파일을 지우지 않도록)."""
     folder = folder or temp_result_dir()
+    if _has_reparse_point(folder):
+        return []
     try:
         files = [p for p in folder.glob("*.pptx")
                  if not p.name.startswith("~$") and p.is_file() and not p.is_symlink()]
@@ -375,6 +412,8 @@ class WorshipBuilder:
             raise BuildError("다음 항목을 처리할 수 없습니다:\n\n" + "\n".join(problems))
 
         if req.temp:
+            if (err := temp_dir_conflict(self.cfg)) is not None:
+                raise BuildError(err)
             out_dir = temp_result_dir()
             try:
                 out_dir.mkdir(parents=True, exist_ok=True)
@@ -427,7 +466,14 @@ class WorshipBuilder:
                     self.log(f"오래된 임시 파일 {len(removed)}개 정리 (최근 {clean_temp_keep(pcfg.get('temp_keep'))}개 보관)")
             self.progress(1.0, "완료")
             return result
-        except PptEngineError as e:
-            raise BuildError(str(e)) from e
+        except BaseException as e:
+            if req.temp:  # 실패하면 반쯤 만든 임시 결과가 [임시 파일] 목록에 남지 않게 지움 (일반 생성은 사용자 폴더라 그대로)
+                try:
+                    output.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if isinstance(e, PptEngineError):
+                raise BuildError(str(e)) from e
+            raise
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
