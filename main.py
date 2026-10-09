@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import ctypes
 import datetime as dt
 import math
 import os
@@ -28,6 +29,7 @@ from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY
                         accent_button, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
+from window_frame import CustomFrame
 from worship_builder import (PPT_EXTS, BuildError, BuildRequest, WorshipBuilder, find_template, list_ccm_files,
                              list_ppt_files, list_temp_results, output_conflict, output_filename, prayer_template_names,
                              prune_temp_results, sanitize_filename, saved_name_for_temp, sermon_template, temp_dir_conflict,
@@ -42,6 +44,10 @@ FILE_FONT_SIZE = 13.2  # 템플릿 파일 목록 글자 크기 (기본 12 의 11
 ORDER_SCROLL_UNIT = 2.4  # 순서 목록 스크롤 단위(논리 px). 휠 한 칸 = 20단위 ≈ 48 = 행 하나 (CTk 기본 1px → 20px)
 RESIZE_SETTLE_MS = 150  # 창 크기 조절이 이 시간 동안 멈추면 그때 내용 배치를 새 크기로 맞춤
 MIN_WIDTH = 1000  # 최소 창 너비 (논리 단위). 처음 열 때도 이 너비 × 최소 높이로 연다
+TOP_RESIZE_EDGE = 5  # 제목 줄 맨 위 이 높이(논리 px)에서는 창 위쪽 크기 조절
+CAPTION_FONT = "Segoe MDL2 Assets"  # Windows 기본 창 버튼 모양 (Win10/11 기본 글꼴)
+CAPTION_GLYPHS = {"min": "\uE921", "max": "\uE922", "restore": "\uE923", "close": "\uE8BB"}
+CLOSE_HOVER = ("#C42B1C", "#C42B1C")
 START_REVEAL_MS = 2000  # 시작 크기 계산이 늦어져도 이 시간 뒤에는 창을 보이게 함
 # 최소 높이를 재기 전 (투명한) 첫 창 높이. 왼쪽 패널보다 낮으면 템플릿 목록이 0줄로 눌려 사라져서(unmapped)
 # _apply_min_size 가 잴 수 없음 — 820 은 성경 영역에 역본2 줄을 넣은 뒤 부족했음. 화면보다 크면 화면에 맞춰짐
@@ -178,6 +184,9 @@ class App(ctk.CTk):
         self._bible_preview = False  # 말씀 더블클릭으로 Bible2PPT 실행 중 (PowerPoint 를 쓰므로 생성과 동시에 하지 않음)
 
         self.drag = DragController(self, self._on_drag_hover, self._on_drag_drop, self._on_drag_click)
+        self.frame = CustomFrame(self)  # Windows 제목 표시줄 대신 프로그램 안의 제목 줄 (처음 표시될 때 적용)
+        self._last_state = "normal"
+        self._normal_size: tuple[int, int] | None = None  # 일반 상태의 마지막 창 크기 (실제 픽셀)
 
         # 창 크기 조절 렉 방지: 모든 내용을 컨테이너 하나에 담고, 크기 조절이 잠시 멈췄을 때만 새 크기로 맞춘다.
         # (Windows 에서는 위젯 수백 개를 매 Configure 마다 재배치·재그리기 하느라 한 번에 0.5초 가까이 걸렸음)
@@ -204,9 +213,15 @@ class App(ctk.CTk):
         pump_ui_queue(self)
 
     def _on_window_configure(self, e):
-        if e.widget is not self or (e.width, e.height) == self._content_size:
+        if e.widget is not self:
+            return
+        self._on_state_change()
+        if (e.width, e.height) == self._content_size:
             return
         if self._content_size is None:  # 처음 표시될 때는 바로 맞추고, 실제 배치를 보고 최소 높이 결정
+            # 아직 투명할 때 Windows 제목 표시줄을 없앰 → 클라이언트가 그만큼 커지므로 새 크기를 반영한 뒤 맞춤
+            if self.frame.install():
+                self.update_idletasks()
             self._fit_content()
             self.after(100, self._apply_min_size)
             return
@@ -292,15 +307,83 @@ class App(ctk.CTk):
     # ================================================================ 상단
     def _build_header(self):
         bar = ctk.CTkFrame(self._content, fg_color="transparent")
-        bar.grid(row=0, column=0, sticky="ew", padx=20, pady=(16, 8))
-        ctk.CTkLabel(bar, text=APP_TITLE, font=font(20, "bold"), text_color=TEXT).pack(side="left")
-        secondary_button(bar, "?  도움말", self._show_help, width=84).pack(side="left", padx=(12, 0))
-        secondary_button(bar, "⚙  설정", self._open_settings, width=88).pack(side="right")
+        bar.grid(row=0, column=0, sticky="ew", padx=(20, 0), pady=(0, 8))  # 창 버튼이 오른쪽 위 끝에 붙도록
+        title = ctk.CTkLabel(bar, text=APP_TITLE, font=font(20, "bold"), text_color=TEXT)
+        title.pack(side="left", pady=(14, 0))
+        secondary_button(bar, "?  도움말", self._show_help, width=84).pack(side="left", padx=(12, 0), pady=(14, 0))
+        # Windows 제목 표시줄 대신 쓰는 창 버튼 (window_frame.CustomFrame — 창 오른쪽 위 끝에 붙임)
+        caption = ctk.CTkFrame(bar, fg_color="transparent")
+        caption.pack(side="right", anchor="n")
+        self.max_btn = None
+        for glyph, cmd, hover in ((CAPTION_GLYPHS["min"], self.iconify, BTN_HOVER),
+                                  (CAPTION_GLYPHS["max"], self._toggle_maximize, BTN_HOVER),
+                                  (CAPTION_GLYPHS["close"], self._on_close, CLOSE_HOVER)):
+            b = ctk.CTkButton(caption, text=glyph, width=46, height=34, corner_radius=0, fg_color="transparent",
+                              hover_color=hover, text_color=TEXT, font=(CAPTION_FONT, 10), command=cmd)
+            b.pack(side="left")
+            if cmd == self._toggle_maximize:
+                self.max_btn = b
+        secondary_button(bar, "⚙  설정", self._open_settings, width=88).pack(side="right", padx=(0, 12), pady=(14, 0))
         current = {v: k for k, v in MODES.items()}.get(self.cfg.get("appearance_mode"), "시스템")
         self.mode_seg = ctk.CTkSegmentedButton(bar, values=list(MODES), command=self._set_mode, font=font(12),
                                                selected_color=ACCENT, height=32)
         self.mode_seg.set(current)
-        self.mode_seg.pack(side="right", padx=10)
+        self.mode_seg.pack(side="right", padx=10, pady=(14, 0))
+        # 제목 줄 빈 곳·제목 글자: 끌면 창 옮기기, 두 번 누르면 최대화/복원, 맨 위 가장자리는 크기 조절
+        self._title_widgets = (bar, title)
+        self._last_title_press = (0, 0, 0)
+        for w in self._title_widgets:
+            w.bind("<ButtonPress-1>", self._on_title_press)
+            w.bind("<Motion>", self._on_title_motion)
+
+    # ---- 창 틀 (Windows 제목 표시줄 없이)
+    def _top_edge(self, y_root: int) -> bool:
+        return not self.frame.is_maximized() and y_root - self.winfo_rooty() < scaled(self, TOP_RESIZE_EDGE)
+
+    def _on_title_motion(self, e):
+        cursor = "sb_v_double_arrow" if self._top_edge(e.y_root) else ""
+        for w in self._title_widgets:
+            try:
+                w.configure(cursor=cursor)
+            except (tk.TclError, ValueError):
+                pass
+
+    def _on_title_press(self, e):
+        if self._top_edge(e.y_root):
+            self.frame.start_resize_top(e.x_root)
+            return
+        # 두 번 누르기: 창 옮기기(Windows 이동 루프)에 들어가면 Tk 가 더블클릭을 받지 못하므로 직접 판정
+        t, x, y = self._last_title_press
+        now = time.monotonic()
+        limit = ctypes.windll.user32.GetDoubleClickTime() / 1000
+        if now - t <= limit and abs(e.x_root - x) <= scaled(self, 4) and abs(e.y_root - y) <= scaled(self, 4):
+            self._last_title_press = (0, 0, 0)
+            self._toggle_maximize()
+            return
+        self._last_title_press = (now, e.x_root, e.y_root)
+        self.frame.start_move()
+
+    def _toggle_maximize(self):
+        self.state("normal" if self.state() == "zoomed" else "zoomed")
+
+    def _on_state_change(self):
+        """최대화 버튼 모양 맞추기 + 최대화에서 돌아올 때 원래 크기로.
+        Tk 는 최대화 때 잰 틀 두께(위쪽을 안으로 들인 만큼 더 큼)를 복원할 때도 써서 창이 한 번 11px 쯤 커졌다(실측)
+        → 일반 상태의 마지막 크기를 기억해 두었다가 복원하면 그 크기로 되돌린다."""
+        state = self.state()
+        if self.max_btn is not None:
+            glyph = CAPTION_GLYPHS["restore" if state == "zoomed" else "max"]
+            if self.max_btn.cget("text") != glyph:
+                self.max_btn.configure(text=glyph)
+        if state == "normal":
+            size = (self.winfo_width(), self.winfo_height())
+            if self._last_state == "zoomed" and self._normal_size and size != self._normal_size:
+                scale = ctk.ScalingTracker.get_window_scaling(self)
+                w, h = (round(v / scale) for v in self._normal_size)
+                self.after_idle(lambda: self.geometry(f"{w}x{h}"))
+            else:
+                self._normal_size = size
+        self._last_state = state
 
     def _build_info_bar(self):
         bar = card(self._content)
