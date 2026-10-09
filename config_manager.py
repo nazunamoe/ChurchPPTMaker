@@ -39,6 +39,7 @@ DEFAULT_CONFIG: dict = {
     "bible2ppt": {
         "exe_path": "",
         "bible": "",
+        "bible2": "",  # 두 번째 기본 역본 (선택, 첫 역본과 나란히 배치)
         "template": "",
         "lines": None,
         "timeout_sec": 180,

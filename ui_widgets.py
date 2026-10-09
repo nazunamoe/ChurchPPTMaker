@@ -12,7 +12,7 @@ from typing import Any, Callable
 import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, bible_sources, filter_bibles, search_names, short_source, split_bible
-from models import (CUSTOM_TEXT_KEYS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON,
+from models import (BIBLE_KEYS, CUSTOM_TEXT_KEYS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON,
                     MAX_FILL, ServiceItem, ccm_title, make_item, numbered_token, validate_item)
 from worship_builder import PPT_EXTS
 
@@ -436,7 +436,7 @@ class ItemDialog(_Modal):
 
     def __init__(self, master, kind: str, item: ServiceItem | None = None,
                  template_names: list[str] | None = None, bible_values: list[str] | None = None,
-                 default_bible: str = "", ccm_files: list[str] | None = None,
+                 default_bible: str = "", default_bible2: str = "", ccm_files: list[str] | None = None,
                  prayer_names: list[str] | None = None, initial: ServiceItem | None = None,
                  fill_slots: Callable[[str], set[int] | None] | None = None, slot_names: list[str] | None = None):
         editing = item is not None
@@ -457,6 +457,7 @@ class ItemDialog(_Modal):
         self._slot_names = slot_names or [f"{{{{내용{n}}}}}" for n in range(1, MAX_FILL + 1)]
         self._slots_job = None
         self.bible_widget = None
+        self.bible2_widget = None
         self.preacher_entry = None
         self.ccm_listbox = None
         row = 1
@@ -514,13 +515,23 @@ class ItemDialog(_Modal):
                          font=font(11), text_color=TEXT2).grid(row=row, column=0, columnspan=2, padx=16, sticky="w")
             row += 1
         if kind == KIND_BIBLE:
+            # 역본을 지정한 항목이면 그 값, 아니면(새 항목·기본 역본 사용 항목) 메인 성경 영역의 역본
+            own = any(self.options.get(k) for k in BIBLE_KEYS)
             self._lbl(body, row, "성경 역본 (선택)")
             self.bible_widget = BibleField(body, values=bible_values, width=260, placeholder="비우면 기본 역본")
-            self.bible_widget.set(self.options.get("bible", default_bible))
+            self.bible_widget.set(self.options.get("bible", "") if own else default_bible)
             self.bible_widget.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
             row += 1
-            ctk.CTkLabel(body, text="여러 구절은 쉼표로 구분합니다. 역본을 비우면 설정의 기본 역본을 사용합니다.",
-                         font=font(11), text_color=TEXT2).grid(row=row, column=0, columnspan=2, padx=16, sticky="w")
+            self._lbl(body, row, "두 번째 역본 (선택)")
+            self.bible2_widget = BibleField(body, values=bible_values, width=260, placeholder="나란히 표시할 역본",
+                                            clear_text="지정 안 함")
+            self.bible2_widget.set(self.options.get("bible2", "") if own else default_bible2)
+            self.bible2_widget.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
+            row += 1
+            ctk.CTkLabel(body, text="여러 구절은 쉼표로 구분합니다. 역본을 비우면 설정의 기본 역본을 사용합니다.\n"
+                                    "두 번째 역본을 고르면 한 슬라이드에 두 역본이 나란히 들어갑니다.",
+                         font=font(11), text_color=TEXT2, justify="left").grid(
+                row=row, column=0, columnspan=2, padx=16, sticky="w")
             row += 1
         if kind == KIND_CUSTOM:
             # 내용2·3 칸 (내용1 = 위의 value_entry). 템플릿에 자리가 없어도 항상 보여 줌 — 어떤 자리가 있는지는 아래 안내
@@ -660,11 +671,11 @@ class ItemDialog(_Modal):
             messagebox.showerror("입력 오류", "기도 종류(템플릿)를 선택해 주세요.", parent=self)
             return
         if self.bible_widget is not None:
-            b = self.bible_widget.get().strip()
-            if b:
-                self.options["bible"] = b
-            else:
-                self.options.pop("bible", None)
+            b1, b2 = self.bible_widget.get().strip(), self.bible2_widget.get().strip()
+            if b2 and not b1:
+                messagebox.showerror("입력 오류", "두 번째 역본을 쓰려면 첫 번째 역본도 지정해 주세요.", parent=self)
+                return
+            self.options["bible"], self.options["bible2"] = b1, b2  # 빈 값은 make_item 이 지움
         if self.preacher_entry is not None:
             self.options["preacher"] = self.preacher_entry.get()
         for n, e in self.text_entries.items():
@@ -740,6 +751,10 @@ class SettingsDialog(_Modal):
                                 clear_text="지정 안 함")
         self.bible.set(b.get("bible") or "")
         row("기본 성경 역본", self.bible, self._load_bibles, button_text="↻")
+        self.bible2 = BibleField(body, values=self.bible_values, width=320, placeholder="나란히 표시할 역본 (선택)",
+                                 clear_text="지정 안 함")
+        self.bible2.set(b.get("bible2") or "")
+        row("두 번째 기본 역본", self.bible2)
         self.bible_hint = ctk.CTkLabel(body, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left")
         self.bible_hint.grid(row=r, column=1, columnspan=2, sticky="w", pady=(0, 4))
         r += 1
@@ -900,12 +915,13 @@ class SettingsDialog(_Modal):
             return
         self.bible_values = res
         self._loaded_for = exe
-        self.bible.set_values(res)
-        cur = self.bible.get().strip()
-        if cur and cur not in res:  # 예전 형식(이름만 입력)이면 목록의 같은 이름 항목으로 맞춤
-            match = next((v for v in res if v.startswith(f"{cur} · ") or v.startswith(f"{cur} [")), None)
-            if match:
-                self.bible.set(match)
+        for field in (self.bible, self.bible2):
+            field.set_values(res)
+            cur = field.get().strip()
+            if cur and cur not in res:  # 예전 형식(이름만 입력)이면 목록의 같은 이름 항목으로 맞춤
+                match = next((v for v in res if v.startswith(f"{cur} · ") or v.startswith(f"{cur} [")), None)
+                if match:
+                    field.set(match)
         self._show_bible_hint()
 
     def _save(self):
@@ -937,9 +953,14 @@ class SettingsDialog(_Modal):
                 self._show_page(self.PAGES[0])
                 messagebox.showerror("입력 오류", f"설교 템플릿 PPT 파일을 찾을 수 없습니다:\n{sermon_raw}", parent=self)
                 return
+        bible1, bible2 = self.bible.get().strip(), self.bible2.get().strip()
+        if bible2 and not bible1:
+            self._show_page(self.PAGES[0])
+            messagebox.showerror("입력 오류", "두 번째 기본 역본을 쓰려면 기본 성경 역본도 지정해 주세요.", parent=self)
+            return
         lines = self.lines.get()
         b = self.cfg.get("bible2ppt")
-        b.update(exe_path=self.exe.get().strip(), bible=self.bible.get().strip(), template=tpl_raw,
+        b.update(exe_path=self.exe.get().strip(), bible=bible1, bible2=bible2, template=tpl_raw,
                  lines=None if lines == "프로그램 설정" else int(lines), timeout_sec=timeout,
                  # 현재 exe 로 불러온 목록만 캐시 (exe 가 바뀌었는데 아직 못 불러왔으면 비움 → 메인에서 다시 불러옴)
                  bible_list=self.bible_values if self._loaded_for is not None and self._loaded_for == self._exe() else [])

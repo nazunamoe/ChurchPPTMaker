@@ -41,6 +41,9 @@ FILE_FONT_SIZE = 13.2  # 템플릿 파일 목록 글자 크기 (기본 12 의 11
 RESIZE_SETTLE_MS = 150  # 창 크기 조절이 이 시간 동안 멈추면 그때 내용 배치를 새 크기로 맞춤
 MIN_WIDTH = 1000  # 최소 창 너비 (논리 단위). 처음 열 때도 이 너비 × 최소 높이로 연다
 START_REVEAL_MS = 2000  # 시작 크기 계산이 늦어져도 이 시간 뒤에는 창을 보이게 함
+# 최소 높이를 재기 전 (투명한) 첫 창 높이. 왼쪽 패널보다 낮으면 템플릿 목록이 0줄로 눌려 사라져서(unmapped)
+# _apply_min_size 가 잴 수 없음 — 820 은 성경 영역에 역본2 줄을 넣은 뒤 부족했음. 화면보다 크면 화면에 맞춰짐
+START_MEASURE_HEIGHT = 1000
 # PyInstaller onefile 은 번들 파일을 sys._MEIPASS 에 풀어 둠
 ICON_PATH = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets" / "app.ico"
 
@@ -153,7 +156,7 @@ class App(ctk.CTk):
         except tk.TclError:
             pass
         self.after(START_REVEAL_MS, self._reveal)
-        self._fit_to_screen(MIN_WIDTH, 820)
+        self._fit_to_screen(MIN_WIDTH, START_MEASURE_HEIGHT)
         _disable_full_redraw_on_resize(self)
 
         self.items: list[ServiceItem] = []
@@ -500,13 +503,19 @@ class App(ctk.CTk):
         self.verse_entry = ctk.CTkEntry(bc, height=34, font=font(13), placeholder_text="예: 창1:1-5, 롬1-3, 요3:16")
         self.verse_entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 6))
         self.verse_entry.bind("<Return>", lambda e: self._add_bible_from_form())
+        # [역본1 🔍][↻][순서에 추가] / [역본2 🔍] — 역본2 를 고르면 Bible2PPT 가 두 역본을 나란히 배치 (-b 두 번)
         brow = ctk.CTkFrame(bc, fg_color="transparent")
         brow.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14)
+        brow.grid_columnconfigure(0, weight=1)
         self.bible_field = BibleField(brow, values=self.bible_values, width=200, font_size=12, placeholder="역본 (비우면 기본값)")
         self.bible_field.set(self.cfg.get("bible2ppt", "bible") or "")
-        self.bible_field.pack(side="left", fill="x", expand=True)
-        secondary_button(brow, "↻", self._load_bible_list, width=32).pack(side="left", padx=4)
-        accent_button(brow, "순서에 추가", self._add_bible_from_form, width=96).pack(side="left")
+        self.bible_field.grid(row=0, column=0, sticky="ew")
+        secondary_button(brow, "↻", self._load_bible_list, width=32).grid(row=0, column=1, padx=4)
+        accent_button(brow, "순서에 추가", self._add_bible_from_form, width=96).grid(row=0, column=2)
+        self.bible2_field = BibleField(brow, values=self.bible_values, width=200, font_size=12,
+                                       placeholder="두 번째 역본 (선택 · 나란히 표시)", clear_text="지정 안 함")
+        self.bible2_field.set(self.cfg.get("bible2ppt", "bible2") or "")
+        self.bible2_field.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.bible_status = ctk.CTkLabel(bc, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left")
         self.bible_status.grid(row=3, column=0, columnspan=2, sticky="w", padx=14, pady=(4, 10))
 
@@ -754,7 +763,8 @@ class App(ctk.CTk):
         prayer = prayer_template_names(self.cfg) if kind == KIND_PRAYER else None
         token = self.cfg.get("ppt", "text_placeholder") or ""
         return ItemDialog(self, kind, item, template_names=self._template_names(), bible_values=self.bible_values,
-                          default_bible=self.bible_field.get().strip(), ccm_files=ccm, prayer_names=prayer,
+                          default_bible=self.bible_field.get().strip(),
+                          default_bible2=self.bible2_field.get().strip(), ccm_files=ccm, prayer_names=prayer,
                           initial=initial, fill_slots=self._custom_slots,
                           slot_names=[numbered_token(token, n) for n in range(1, MAX_FILL + 1)] if token else None).show()
 
@@ -1094,8 +1104,11 @@ class App(ctk.CTk):
         except ValueError as e:
             messagebox.showerror("입력 오류", str(e), parent=self)
             return
-        bible = self.bible_field.get().strip()
-        item = make_item(KIND_BIBLE, "말씀", ", ".join(refs), {"bible": bible} if bible else {})
+        bible, bible2 = self.bible_field.get().strip(), self.bible2_field.get().strip()
+        if bible2 and not bible:
+            messagebox.showerror("입력 오류", "두 번째 역본을 쓰려면 첫 번째 역본도 지정해 주세요.", parent=self)
+            return
+        item = make_item(KIND_BIBLE, "말씀", ", ".join(refs), {"bible": bible, "bible2": bible2})
         self._insert(item)
         self.verse_entry.delete(0, "end")
 
@@ -1121,12 +1134,13 @@ class App(ctk.CTk):
 
     def _set_bible_values(self, values: list[str]):
         self.bible_values = values
-        self.bible_field.set_values(values)
-        cur = self.bible_field.get().strip()
-        if not cur or cur not in values:  # 비었거나 예전 형식이면 설정의 기본 역본으로 맞춤
-            default = self.cfg.get("bible2ppt", "bible") or ""
-            if not cur or default in values:
-                self.bible_field.set(default)
+        for field, key in ((self.bible_field, "bible"), (self.bible2_field, "bible2")):
+            field.set_values(values)
+            cur = field.get().strip()
+            if not cur or cur not in values:  # 비었거나 예전 형식이면 설정의 기본 역본으로 맞춤
+                default = self.cfg.get("bible2ppt", key) or ""
+                if not cur or default in values:
+                    field.set(default)
 
     def _load_bible_list_if_needed(self):
         """exe 는 있는데 캐시된 역본 목록이 없으면 (예: 첫 실행·이전 버전 설정) 조용히 불러온다."""
@@ -1206,8 +1220,9 @@ class App(ctk.CTk):
     def _open_settings(self):
         if SettingsDialog(self, self.cfg).show():
             self._set_bible_values(list(self.cfg.get("bible2ppt", "bible_list") or []))
-            if not self.bible_field.get().strip():
-                self.bible_field.set(self.cfg.get("bible2ppt", "bible") or "")
+            for field, key in ((self.bible_field, "bible"), (self.bible2_field, "bible2")):
+                if not field.get().strip():
+                    field.set(self.cfg.get("bible2ppt", key) or "")
             self._update_bible_status()
             self._load_bible_list_if_needed()  # exe 를 바꿨는데 설정 창에서 목록을 못 받았으면 다시 시도
             self._set_status("설정을 저장했습니다.")

@@ -14,6 +14,7 @@ KIND_CCM = "ccm"         # CCM 폴더에서 검색해 고른 파일 (value = CCM
 
 MAX_FILL = 3             # 항목당 텍스트 입력칸 수 ({{내용1}} ~ {{내용3}})
 CUSTOM_TEXT_KEYS = {2: "text2", 3: "text3"}  # 사용자 지정 항목의 {{내용2}}·{{내용3}} 값 (options 키). 1번은 value
+BIBLE_KEYS = ("bible", "bible2")  # 말씀 항목의 역본1·역본2 (options 키). 역본2 는 Bible2PPT 에서 나란히 배치
 
 # 결과 파일 이름 형식 (프리셋별로 다르게 저장 가능). {항목} 자리에 값이 들어감 — worship_builder.output_filename
 FILENAME_FIELDS = ("날짜", "년", "월", "일", "교회이름", "예배종류")
@@ -113,6 +114,11 @@ def make_item(kind: str, label: str, value: str, options: dict | None = None) ->
         value = normalize_hymn(value)
     elif kind == KIND_BIBLE:
         label = "말씀"
+        options = dict(options or {})
+        for k in BIBLE_KEYS:  # 빈 칸은 저장하지 않음 (역본1 이 없으면 설정의 기본 역본 사용)
+            v = str(options.pop(k, "")).strip()
+            if v:
+                options[k] = v
     elif kind == KIND_CCM:
         label = "CCM"
         value = value.replace("\\", "/")
@@ -168,10 +174,13 @@ def export_to_text(items: list[ServiceItem], church_name: str = "", worship_type
     lines.append("")
 
     for item in items:
-        # [kind]label|value|역본(말씀) 또는 설교자(설교) 또는 내용2|내용3(사용자 지정)
+        # [kind]label|value|역본1|역본2(말씀) 또는 설교자(설교) 또는 내용2|내용3(사용자 지정)
         opt_str = ""
-        if item.kind == KIND_BIBLE and "bible" in item.options:
-            opt_str = f"|{item.options['bible']}"
+        if item.kind == KIND_BIBLE:
+            extra = [item.options.get(k, "") for k in BIBLE_KEYS]
+            while extra and not extra[-1]:
+                extra.pop()
+            opt_str = "".join(f"|{v}" for v in extra)
         elif item.kind == KIND_SERMON:
             opt_str = f"|{item.options.get('preacher', '')}"
         elif item.kind == KIND_CUSTOM:
@@ -215,8 +224,10 @@ def import_from_text(text: str) -> tuple[list[ServiceItem], dict[str, str]]:
                 value = parts[1].strip() if len(parts) > 1 else ""
 
                 opts = {}
-                if kind == KIND_BIBLE and len(parts) > 2 and parts[2].strip():
-                    opts["bible"] = parts[2].strip()
+                if kind == KIND_BIBLE and len(parts) > 2:
+                    for k, v in zip(BIBLE_KEYS, parts[2].split("|")):
+                        if v.strip():
+                            opts[k] = v.strip()
                 elif kind == KIND_SERMON and len(parts) > 2:
                     opts["preacher"] = parts[2].strip()
                 elif kind == KIND_CUSTOM and len(parts) > 2:

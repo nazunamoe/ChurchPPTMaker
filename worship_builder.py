@@ -12,7 +12,7 @@ from typing import Callable
 
 from bible_bridge import Bible2PPT, Bible2PPTError
 from config_manager import ConfigManager
-from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER,
+from models import (BIBLE_KEYS, DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER,
                     KIND_SERMON, MAX_FILL, ServiceItem, ccm_title, hymn_number, numbered_token)
 from ppt_engine import MERGE_SOURCE_FORMATTING, MergeJob, PptEngine, PptEngineError
 
@@ -142,6 +142,22 @@ def sermon_template(cfg: ConfigManager) -> Path | None:
     return p if p and p.is_file() and p.suffix.lower() in PPT_EXTS else None
 
 
+def item_bibles(it: ServiceItem, cfg: ConfigManager) -> list[str]:
+    """말씀 항목의 역본 목록 (-b 순서, 2개면 Bible2PPT 가 나란히 배치).
+    항목에 역본을 지정했으면 그 역본1(비면 설정 기본 역본1)·역본2, 아니면 설정의 기본 역본1·역본2."""
+    b = cfg.get("bible2ppt")
+    if any(it.options.get(k) for k in BIBLE_KEYS):
+        pair = (it.options.get("bible") or b.get("bible") or "", it.options.get("bible2") or "")
+    else:
+        pair = (b.get("bible") or "", b.get("bible2") or "")
+    out: list[str] = []
+    for v in pair:
+        v = v.strip()
+        if v and v not in out:  # 같은 역본을 두 번 넘기지 않음
+            out.append(v)
+    return out
+
+
 def bible_template(cfg: ConfigManager) -> tuple[Path | None, str | None]:
     """설정의 성경 템플릿 → (경로, 오류). 지정 안 했으면 (None, None).
     Bible2PPT 는 자기 PowerPoint 세션에서 이 파일을 열어 이 프로그램의 매크로 차단(AutomationSecurity)이 미치지 않으므로
@@ -268,9 +284,9 @@ class WorshipBuilder:
         return bible_template(self.cfg)[1]
 
     def generate_bible(self, it: ServiceItem, output: Path) -> Path:
-        """말씀 항목 → Bible2PPT 로 output 에 PPT 생성 (항목 역본 → 설정 기본 역본 → Bible2PPT 마지막 선택값)."""
+        """말씀 항목 → Bible2PPT 로 output 에 PPT 생성 (역본은 item_bibles, 없으면 Bible2PPT 마지막 선택값)."""
         bcfg = self.cfg.get("bible2ppt")
-        return self._bible().generate(it.value, output, bible=it.options.get("bible") or bcfg.get("bible") or None,
+        return self._bible().generate(it.value, output, bible=item_bibles(it, self.cfg) or None,
                                       template=bible_template(self.cfg)[0], lines=bcfg.get("lines"))
 
     def resolve(self, items: list[ServiceItem]) -> tuple[list[Path | None], list[str]]:
