@@ -26,7 +26,7 @@ from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_C
                     KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, make_item, numbered_token, validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
                         TEXT2, BibleField, CalendarPopup, DragController, HelpDialog, ItemDialog, LogDialog, SettingsDialog, TempFilesDialog,
-                        accent_button, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
+                        accent_button, apply_accent, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
 from window_frame import CustomFrame
@@ -151,6 +151,7 @@ class App(ctk.CTk):
         self.cfg = ConfigManager()
         self.presets = PresetManager()
         ctk.set_appearance_mode(self.cfg.get("appearance_mode") or "System")
+        apply_accent(bool(self.cfg.get("use_system_accent")))  # 위젯을 만들기 전에 강조 색을 정함
         ctk.set_default_color_theme("blue")
         super().__init__(fg_color=BG)
         self.title(APP_TITLE)
@@ -222,6 +223,8 @@ class App(ctk.CTk):
             # 아직 투명할 때 Windows 제목 표시줄을 없앰 → 클라이언트가 그만큼 커지므로 새 크기를 반영한 뒤 맞춤
             if self.frame.install():
                 self.update_idletasks()
+            else:  # 창 틀 처리를 못 하면 Windows 기본 제목 표시줄이 그대로이므로 프로그램 안 창 버튼은 숨김(중복)
+                self._caption_frame.pack_forget()
             self._fit_content()
             self.after(100, self._apply_min_size)
             return
@@ -312,7 +315,7 @@ class App(ctk.CTk):
         title.pack(side="left", pady=(14, 0))
         secondary_button(bar, "?  도움말", self._show_help, width=84).pack(side="left", padx=(12, 0), pady=(14, 0))
         # Windows 제목 표시줄 대신 쓰는 창 버튼 (window_frame.CustomFrame — 창 오른쪽 위 끝에 붙임)
-        caption = ctk.CTkFrame(bar, fg_color="transparent")
+        caption = self._caption_frame = ctk.CTkFrame(bar, fg_color="transparent")
         caption.pack(side="right", anchor="n")
         self.max_btn = None
         for glyph, cmd, hover in ((CAPTION_GLYPHS["min"], self.iconify, BTN_HOVER),
@@ -1534,6 +1537,7 @@ class App(ctk.CTk):
     def _open_settings(self):
         keys = ("bible", "bible2")
         old = {k: self.cfg.get("bible2ppt", k) or "" for k in keys}
+        old_accent = bool(self.cfg.get("use_system_accent"))
         if SettingsDialog(self, self.cfg).show():
             self._set_bible_values(list(self.cfg.get("bible2ppt", "bible_list") or []))
             # 기본 역본을 바꿨으면, 그 기본값을 그대로 쓰던(비었거나 예전 기본값인) 칸만 새 기본값으로
@@ -1545,7 +1549,9 @@ class App(ctk.CTk):
             self._load_bible_list_if_needed()  # exe 를 바꿨는데 설정 창에서 목록을 못 받았으면 다시 시도
             # 보관 개수를 줄였으면 바로 정리 (임시 폴더가 원본 폴더와 겹치면 정리하지 않음)
             removed = [] if temp_dir_conflict(self.cfg) else prune_temp_results(self.cfg.get("ppt", "temp_keep"))
-            self._set_status("설정을 저장했습니다." + (f" 오래된 임시 파일 {len(removed)}개를 지웠습니다." if removed else ""))
+            self._set_status("설정을 저장했습니다." + (f" 오래된 임시 파일 {len(removed)}개를 지웠습니다." if removed else ""),
+                             "강조 색은 프로그램을 다시 켜면 바뀝니다."
+                             if bool(self.cfg.get("use_system_accent")) != old_accent else "")
 
     def _schedule_save(self):
         if self._save_job:

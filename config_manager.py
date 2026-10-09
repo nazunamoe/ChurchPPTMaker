@@ -29,6 +29,7 @@ DEFAULT_CONFIG: dict = {
     "worship_type": "주일오전예배",
     "filename_format": DEFAULT_FILENAME_FORMAT,  # 결과 파일 이름 형식 (프리셋을 불러오면 프리셋의 형식으로 바뀜)
     "appearance_mode": "System",
+    "use_system_accent": True,  # Windows 강조 색을 프로그램 강조 색으로 (다시 켤 때 적용)
     "paths": {
         "template_dir": "templates",
         "hymn_dir": "hymns",

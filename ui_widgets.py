@@ -22,8 +22,12 @@ from worship_builder import PPT_EXTS
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
 FONT_FAMILY = "Malgun Gothic"
-ACCENT = ("#0067C0", "#2B88D8")
-ACCENT_HOVER = ("#1975C5", "#3C95E0")
+# 강조 색은 apply_accent() 가 Windows 강조 색으로 바꿀 수 있도록 리스트(같은 개체를 제자리에서 바꿈 — 다른 모듈이
+# from ui_widgets import ACCENT 로 가져간 이름도 같이 바뀜). 위젯을 만들기 전에 정해야 한다 (CTk 는 만들 때 색을 읽음).
+DEFAULT_ACCENT = ("#0067C0", "#2B88D8")
+DEFAULT_ACCENT_HOVER = ("#1975C5", "#3C95E0")
+ACCENT = list(DEFAULT_ACCENT)
+ACCENT_HOVER = list(DEFAULT_ACCENT_HOVER)
 BG = ("#F3F3F3", "#202020")
 CARD = ("#FFFFFF", "#2B2B2B")
 SUBTLE = ("#F9F9F9", "#323232")
@@ -48,6 +52,67 @@ MERGE_MODES = {
     "원본 서식 유지 (권장)": "source_formatting",
     "창 없이 병합 (배경은 복제/이미지화)": "windowless",
 }
+
+
+def _luminance(hex_color: str) -> float:
+    """WCAG 상대 휘도."""
+    def ch(v: int) -> float:
+        c = v / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+
+
+def _contrast_with_white(hex_color: str) -> float:
+    return 1.05 / (_luminance(hex_color) + 0.05)
+
+
+def _blend(hex_color: str, toward: str, t: float) -> str:
+    a = [int(hex_color[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(toward[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02X}" for x, y in zip(a, b))
+
+
+def windows_accent_palette() -> list[str] | None:
+    """Windows 강조 색 팔레트 (밝은 것 → 어두운 것 7단계: Light3, Light2, Light1, 강조 색, Dark1, Dark2, Dark3).
+    HKCU\\…\\Explorer\\Accent\\AccentPalette (색마다 RGBA 4바이트, 8개 중 마지막은 강조 색과 무관). 읽을 수 없으면 None."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent") as k:
+            data, kind = winreg.QueryValueEx(k, "AccentPalette")
+        if kind != winreg.REG_BINARY or len(data) < 28:
+            return None
+        return [f"#{data[i]:02X}{data[i + 1]:02X}{data[i + 2]:02X}" for i in range(0, 28, 4)]
+    except (OSError, ImportError):
+        return None
+
+
+def pick_accent(palette: list[str]) -> tuple[tuple[str, str], tuple[str, str]]:
+    """팔레트 → ((라이트, 다크) 강조 색, (라이트, 다크) 마우스 올림 색).
+    Win11 앱처럼 라이트 모드는 Dark1, 다크 모드는 강조 색에서 시작하되, 강조 버튼 글자가 흰색이므로 흰 글자와의
+    명암비가 4.5:1 이상이 될 때까지 더 어두운 단계로 내려간다 (노랑·연두처럼 밝은 강조 색에서도 글자가 읽히게).
+    끝까지 모자라면 가장 어두운 단계를 더 어둡게 섞는다. 마우스 올림 색은 흰색 쪽으로 10% 섞은 색."""
+    def readable(start: int) -> str:
+        for c in palette[start:7]:
+            if _contrast_with_white(c) >= 4.5:
+                return c
+        c = palette[6]
+        for _ in range(10):
+            if _contrast_with_white(c) >= 4.5:
+                break
+            c = _blend(c, "#000000", 0.15)
+        return c
+    light, dark = readable(4), readable(3)
+    return (light, dark), (_blend(light, "#FFFFFF", 0.1), _blend(dark, "#FFFFFF", 0.1))
+
+
+def apply_accent(use_windows: bool) -> bool:
+    """강조 색을 Windows 강조 색(use_windows) 또는 기본 파랑으로. 위젯을 만들기 전에 부를 것. Windows 색을 썼으면 True."""
+    palette = windows_accent_palette() if use_windows else None
+    accent, hover = pick_accent(palette) if palette else (DEFAULT_ACCENT, DEFAULT_ACCENT_HOVER)
+    ACCENT[:] = accent
+    ACCENT_HOVER[:] = hover
+    return palette is not None
 
 
 _FONT_CACHE: dict[tuple[int, str], ctk.CTkFont] = {}
@@ -830,6 +895,19 @@ class SettingsDialog(_Modal):
         self.placeholder.bind("<KeyRelease>", lambda e: self._update_default_labels(), add="+")
         self._update_default_labels()
 
+        section("화면")
+        self.use_accent = ctk.BooleanVar(value=bool(cfg.get("use_system_accent")))
+        ctk.CTkCheckBox(body, text="Windows 강조 색 사용", variable=self.use_accent, font=font(13), checkbox_width=20,
+                        checkbox_height=20, fg_color=ACCENT).grid(row=r, column=0, columnspan=2, padx=16, pady=5, sticky="w")
+        r += 1
+        palette = windows_accent_palette()
+        ctk.CTkLabel(body, text=("Windows 설정 → 개인 설정 → 색의 강조 색을 버튼·선택 표시 등에 씁니다. "
+                                 "끄면 기본 파란색. 프로그램을 다시 켜면 바뀝니다.")
+                     + ("" if palette else "\n(이 PC 에서는 Windows 강조 색을 읽을 수 없어 기본 파란색을 씁니다.)"),
+                     font=font(11), text_color=TEXT2, anchor="w", justify="left").grid(
+            row=r, column=0, columnspan=3, padx=16, pady=(0, 10), sticky="w")
+        r += 1
+
         section("임시 파일")
         self.temp_keep = entry(str(clean_temp_keep(p.get("temp_keep"))), width=80)
         row("최대 보관 개수", self.temp_keep)
@@ -992,6 +1070,7 @@ class SettingsDialog(_Modal):
                  # 현재 exe 로 불러온 목록만 캐시 (exe 가 바뀌었는데 아직 못 불러왔으면 비움 → 메인에서 다시 불러옴)
                  bible_list=self.bible_values if self._loaded_for is not None and self._loaded_for == self._exe() else [])
         self.cfg.get("item_templates").update(sermon_file=sermon_raw)
+        self.cfg.data["use_system_accent"] = bool(self.use_accent.get())
         p = self.cfg.get("ppt")
         p.update(text_placeholder=self.placeholder.get().strip(), text_shape_name=self.shape_name.get().strip(),
                  fill_defaults=[e.get().strip() for e in self.fill_defaults],

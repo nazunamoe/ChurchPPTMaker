@@ -30,8 +30,12 @@ _comctl.DefSubclassProc.restype = _LRESULT
 _user32.GetParent.argtypes = (wintypes.HWND,)
 _user32.GetParent.restype = wintypes.HWND
 _user32.IsZoomed.argtypes = (wintypes.HWND,)
-_user32.GetDpiForWindow.argtypes = (wintypes.HWND,)
-_user32.GetSystemMetricsForDpi.argtypes = (ctypes.c_int, wintypes.UINT)
+try:  # Windows 10 1607 이상에만 있음 — 없으면 시스템 배율 값으로 대신 (불러오기 단계에서 꺼지지 않게)
+    _user32.GetDpiForWindow.argtypes = (wintypes.HWND,)
+    _user32.GetSystemMetricsForDpi.argtypes = (ctypes.c_int, wintypes.UINT)
+    _HAS_DPI_API = True
+except AttributeError:
+    _HAS_DPI_API = False
 _user32.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                  wintypes.UINT)
 _user32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
@@ -41,6 +45,14 @@ _HTCAPTION, _HTTOP, _HTTOPLEFT, _HTTOPRIGHT = 2, 12, 13, 14
 _SM_CYFRAME, _SM_CXPADDEDBORDER = 33, 92
 _SWP_FRAMECHANGED_ONLY = 0x0020 | 0x0002 | 0x0001 | 0x0004 | 0x0010  # FRAMECHANGED|NOMOVE|NOSIZE|NOZORDER|NOACTIVATE
 _SUBCLASS_ID = 0xC4A3
+
+
+def _window_dpi(hwnd) -> int:
+    return _user32.GetDpiForWindow(hwnd) if _HAS_DPI_API else 96
+
+
+def _frame_metric(index: int, dpi: int) -> int:
+    return _user32.GetSystemMetricsForDpi(index, dpi) if _HAS_DPI_API else _user32.GetSystemMetrics(index)
 
 
 class _NCCALCSIZE_PARAMS(ctypes.Structure):
@@ -77,9 +89,8 @@ class CustomFrame:
                 result = _comctl.DefSubclassProc(hwnd, msg, wparam, lparam)  # 좌우·아래 틀은 기본대로
                 rect = params.rgrc[0]
                 if _user32.IsZoomed(hwnd):  # 최대화: 화면 밖으로 넘친 위쪽 틀 두께만큼 안으로
-                    dpi = _user32.GetDpiForWindow(hwnd)
-                    rect.top = top + _user32.GetSystemMetricsForDpi(_SM_CYFRAME, dpi) \
-                        + _user32.GetSystemMetricsForDpi(_SM_CXPADDEDBORDER, dpi)
+                    dpi = _window_dpi(hwnd)
+                    rect.top = top + _frame_metric(_SM_CYFRAME, dpi) + _frame_metric(_SM_CXPADDEDBORDER, dpi)
                 else:
                     rect.top = top  # 위쪽 제목 표시줄만 없앰
                 params.rgrc[0] = rect
@@ -107,7 +118,7 @@ class CustomFrame:
             return
         left = self.win.winfo_rootx()
         right = left + self.win.winfo_width()
-        corner = round(16 * _user32.GetDpiForWindow(self.hwnd) / 96)  # 이 폭 안이면 모서리(대각선) 크기 조절
+        corner = round(16 * _window_dpi(self.hwnd) / 96)  # 이 폭 안이면 모서리(대각선) 크기 조절
         hit = _HTTOPLEFT if x_root - left < corner else _HTTOPRIGHT if right - x_root < corner else _HTTOP
         _user32.ReleaseCapture()
         _user32.PostMessageW(self.hwnd, _WM_NCLBUTTONDOWN, hit, 0)

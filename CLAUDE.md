@@ -11,7 +11,7 @@
 
 ## 2. 기술 스택
 - Python 3.10+ (개발 환경: 3.14)
-- **CustomTkinter 6.x** — UI (Win11 Fluent 느낌: 둥근 모서리, 액센트 `#0067C0`, 맑은 고딕, 다크/라이트/시스템 모드)
+- **CustomTkinter 6.x** — UI (Win11 Fluent 느낌: 둥근 모서리, 액센트 = Windows 강조 색(끄면 `#0067C0`), 맑은 고딕, 다크/라이트/시스템 모드)
 - **pywin32 (`win32com.client`)** — PowerPoint COM 자동화 (백그라운드, `WithWindow=False`)
 - **Bible2PPT** (https://github.com/nazunamoe/Bible2PPT) — 외부 실행 파일을 CLI로 호출
 - 실행: `pip install -r requirements.txt` → `python main.py`
@@ -90,6 +90,9 @@ ChurchPPTMaker/
   맨 위 `TOP_RESIZE_EDGE`(5) 안은 위쪽 크기 조절. 좌우·아래 크기 조절·둥근 모서리·그림자·작업 표시줄·Alt+Tab 은 Windows 그대로.
   창 틀 처리는 처음 표시될 때(아직 투명할 때 `_on_window_configure`) 적용 → 깜빡임 없음.
   다이얼로그가 떠 있으면 grab 때문에 제목 줄로 창을 옮길 수 없음(Esc 로 닫은 뒤). Win11 최대화 버튼 위 스냅 레이아웃 메뉴는 없음.
+  Win10: `GetDpiForWindow`·`GetSystemMetricsForDpi` 는 1607 이상에만 있어 없으면 시스템 배율 값(`_HAS_DPI_API`)으로 대신하고,
+  창 틀 처리(`install`)가 실패하면 Windows 기본 제목 표시줄 그대로 + 프로그램 안 창 버튼 숨김. 실제 Win10 에서는 아직 확인 안 함
+  (이 PC 에서 함수 없음·처리 실패를 흉내 내 확인). Win10 은 모서리가 각지고, 위쪽 틀이 없어 위 테두리 선이 안 보일 수 있음.
 - 도움말(`HelpDialog`, 제목 오른쪽 [? 도움말]): 왼쪽 목차(tk.Listbox, 클릭하면 그 절로) + 본문 Text 하나(태그로 제목·표·
   글머리·강조) + 위 검색칸(입력하면 모두 표시, Enter 다음 찾기). 내용은 `help_content.HELP_SECTIONS` — 표기는 그 파일 머리말.
   CTkTextbox 는 태그 font 를 막으므로 안쪽 `_textbox` 에 `tk_font` 로 지정. 표는 열마다 가장 긴 글자로 탭 위치를 정함
@@ -239,7 +242,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
 ```json
 {
   "church_name": "", "worship_type": "주일오전예배", "filename_format": "{날짜}_{교회이름}_{예배종류}",
-  "appearance_mode": "System",
+  "appearance_mode": "System", "use_system_accent": true,
   "paths": {"template_dir": "templates", "hymn_dir": "hymns", "ccm_dir": "ccm", "prayer_dir": "prayers",
             "output_dir": "output"},
   "bible2ppt": {"exe_path": "", "bible": "", "bible2": "", "template": "", "lines": null, "timeout_sec": 180,
@@ -253,6 +256,11 @@ Bible2PPT.exe <성경 구절...> [옵션]
 - `open_after_build`·`start_slideshow`: 생성 시작 때 `BuildRequest.open_mode` 로 정해 병합한 PowerPoint 에서 바로 연다(§7 결과 열기).
   그게 안 됐을 때(`req.opened` False)·[임시 파일]의 쇼는 `os.startfile(path, "show")`(= .pptx 의 Show 동사, `POWERPNT.EXE /s`).
   Show 동사가 없으면 App Paths 의 POWERPNT.EXE `/s`, 그래도 실패하면 일반 열기 + 로그 경고. `open_after_build`·`temp_mode` 가 모두 꺼지면 비활성.
+- `use_system_accent`: Windows 강조 색을 프로그램 강조 색으로 (⚙ 설정 '화면', 다시 켤 때 적용). `ui_widgets.apply_accent` 가
+  `App.__init__` 에서 위젯을 만들기 전에 `ACCENT`·`ACCENT_HOVER` 를 **제자리에서** 바꾼다(리스트 — `from ui_widgets import ACCENT`
+  로 가져간 이름도 같은 개체). 색은 `HKCU\...\Explorer\Accent\AccentPalette`(7단계)에서 라이트 모드 Dark1·다크 모드 강조 색부터,
+  흰 글자 명암비 4.5:1 이상이 될 때까지 어두운 단계로(`pick_accent` — 노랑 등 밝은 색도 버튼 글자가 읽히게). 못 읽으면 기본 파랑.
+  항목 종류 색(`KIND_COLORS`)·삭제 빨강(`DANGER`)은 강조 색과 별개 — 강조 색이 빨강이면 삭제 글자와 비슷해 보일 수 있음.
 - `temp_mode`/`temp_keep`: §9-2 임시 실행 모드. `temp_keep` 은 `config_manager.clean_temp_keep` 으로 1~100 정수(잘못된 값은 10).
 - 상대 경로는 프로그램 폴더 기준. 누락 키는 기본값으로 자동 병합. 교회 이름/예배 종류/파일 이름 형식/폴더는 메인 UI에서 바로 저장됨, 나머지는 ⚙ 설정.
 
@@ -345,6 +353,9 @@ Bible2PPT.exe <성경 구절...> [옵션]
     최대화 후 복원하면 창이 한 번 11px 커짐 → 일반 상태 크기를 기억했다가 되돌림.
     제목 줄 위에서 마우스를 움직이면 제목 줄이 4배쯤(69→300px) 커짐 → 커서 지정이 CTkFrame.configure 를 거쳐 틀 크기를
     기본값으로 되돌렸음. 안쪽 Tk 위젯에 직접, 바뀔 때만 지정 (§11).
+- 2026-10-09: Windows 강조 색을 프로그램 강조 색으로 (⚙ 설정 '화면'에서 끄기 가능).
+  - 검증: 이 PC 빨강 팔레트(라이트 #D20E1E·다크 #E81123, 흰 글자 5.5·4.6:1), 노랑·연두·기본 파랑·회색 팔레트 선택 결과,
+    라이트/다크 화면 캡처, 설정 끄기 저장 → 다시 켤 때 기본 파랑, 잘못된 설정 값 → 기본값(켬), UI 테스트 39건.
 - 2026-10-09 v1.0.7: 위 변경 전체의 엣지 케이스·보안 점검 (함수 20건, 실제 PowerPoint 엔진 21건, UI 39건, 실제 [생성] 버튼 경로).
   - 엔진: 글자 조각으로 나뉜 토큰·표 칸·그룹·이름 상자(`내용2`) 안 공통 토큰·빈 `{{내용3}}` 삭제, 결과 창이 읽기 전용이 아니어서
     고쳐 저장 가능, 결과를 닫으면 PowerPoint 종료, 창 없는 방식은 열기 요청에 False(파일로 엶), 손상 파일·말씀 실패 시
