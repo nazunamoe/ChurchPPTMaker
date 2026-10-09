@@ -6,7 +6,7 @@
 - 나머지 원본은 merge_mode 에 따라 이어 붙인다.
   * "source_formatting" (기본): PowerPoint 의 [원본 서식 유지] 붙여넣기 명령(PasteSourceFormatting)을 실행.
     테마·마스터·레이아웃·슬라이드 배경(그림 포함)까지 PowerPoint 가 직접 보존한다.
-    명령 실행에 문서 창이 필요하므로 PowerPoint 를 최소화한 상태로 창을 하나 연다.
+    명령 실행에 문서 창이 필요하므로 창을 하나 열되, 나타나는 즉시 숨긴다(_FrameHider — 화면에 깜빡이지 않음).
   * "windowless": 창 없이 Slides.Paste 후 슬라이드별 Design/CustomLayout 을 원본 것으로 지정하고
     슬라이드 배경을 복제(단색은 정확히, 그라데이션/그림 등은 고해상도 이미지로)한다.
   "source_formatting" 이 실패하면 해당 파일은 자동으로 "windowless" 로 처리한다.
@@ -15,9 +15,12 @@
 """
 from __future__ import annotations
 
+import ctypes
 import shutil
 import tempfile
+import threading
 import time
+from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -25,6 +28,9 @@ from typing import Callable
 import pythoncom
 import pywintypes
 import win32com.client
+import win32con
+import win32gui
+import win32process
 
 from models import MAX_FILL, numbered_token
 
@@ -34,7 +40,7 @@ MSO_GROUP = 6
 MSO_FILL_SOLID = 1
 PP_SAVE_AS_PPTX = 24
 PP_ALERTS_NONE = 1
-PP_WINDOW_MINIMIZED = 2
+PP_WINDOW_MAXIMIZED = 3
 PP_VIEW_NORMAL = 9
 MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3  # 자동화로 여는 파일의 매크로 강제 비활성
 
@@ -46,6 +52,115 @@ MERGE_WINDOWLESS = "windowless"
 SLIDE_SIZES = {"16:9": (960.0, 540.0), "4:3": (720.0, 540.0)}
 
 LogFn = Callable[[str], None]
+
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_WINEVENTPROC = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND, wintypes.LONG,
+                                   wintypes.LONG, wintypes.DWORD, wintypes.DWORD)
+_user32.SetWinEventHook.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE, _WINEVENTPROC,
+                                    wintypes.DWORD, wintypes.DWORD, wintypes.DWORD)
+_user32.SetWinEventHook.restype = wintypes.HANDLE
+_user32.UnhookWinEvent.argtypes = (wintypes.HANDLE,)
+_user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+_user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+_user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+_user32.PostThreadMessageW.argtypes = (wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+_EVENT_OBJECT_SHOW = 0x8002
+_PPT_FRAME_CLASS = "PPTFrameClass"  # PowerPoint 문서 창(최상위 창) 클래스
+_SW_HIDE, _SW_SHOW, _SW_SHOWNA = 0, 5, 8
+_WM_QUIT = 0x0012
+
+
+class _FrameHider:
+    """with 블록 동안 화면에 나타나는 PowerPoint 문서 창을 그 즉시 숨긴다 (hidden 에 창 핸들을 모음).
+    [원본 서식 유지] 붙여넣기에 필요한 문서 창(NewWindow)·결과를 닫을 때 잠깐 뜨는 빈 PowerPoint 창이 깜빡이지 않게 쓴다.
+    - WinEvent 훅 콜백은 메시지 루프를 도는 스레드에서만 불린다 — 작업 스레드는 COM 호출 동안 전달받지 못하므로(실측)
+      전용 스레드에서 훅을 건다.
+    - 다른 프로세스 창의 ShowWindow 는 그 창의 스레드가 처리해야 끝나는데, 창을 처음 띄우는 PowerPoint 는 바빠서 약 0.25초
+      늦게 숨겨진다(실측). PowerPoint 는 문서 창을 미리 숨겨 만들어 두고 다시 쓰므로, 블록에 들어갈 때(PowerPoint 가 한가할
+      때) 숨어 있는 문서 창을 완전히 투명하게 해 두면 그사이에도 보이지 않는다. 나갈 때 원래 스타일로 되돌린다.
+    - 블록 동안 사용자가 우연히 연 PowerPoint 창도 숨겨지므로, 나갈 때 keep(창 제목)이 False 인 창은 다시 보이게 한다
+      (keep 을 주지 않으면 숨긴 창을 모두 그대로 둠 — 종료 직전처럼 사용자 창이 있을 수 없을 때).
+    블록은 짧게 유지할 것."""
+
+    def __init__(self, keep: Callable[[str], bool] | None = None):
+        self.hidden: list[int] = []
+        self._keep = keep
+        self._transparent: dict[int, int] = {}  # 투명하게 바꾼 창 → 원래 확장 스타일
+        self._proc = _WINEVENTPROC(self._on_show)  # 콜백 개체가 사라지지 않게 보관
+        self._ready = threading.Event()
+        self._thread_id = 0
+        self._thread: threading.Thread | None = None
+
+    def _on_show(self, hook, event, hwnd, obj_id, child_id, thread, time_ms):
+        if obj_id != 0 or not hwnd:  # OBJID_WINDOW 만 (창 안의 컨트롤·캐럿 등 제외)
+            return
+        buf = ctypes.create_unicode_buffer(64)
+        if _user32.GetClassNameW(hwnd, buf, 64) and buf.value == _PPT_FRAME_CLASS:
+            _user32.ShowWindow(hwnd, _SW_HIDE)
+            if hwnd not in self.hidden:
+                self.hidden.append(hwnd)
+
+    def _run(self):
+        self._thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
+        hook = _user32.SetWinEventHook(_EVENT_OBJECT_SHOW, _EVENT_OBJECT_SHOW, None, self._proc, 0, 0, 0)
+        self._ready.set()
+        if not hook:
+            return
+        msg = wintypes.MSG()
+        try:
+            while _user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                _user32.TranslateMessage(ctypes.byref(msg))
+                _user32.DispatchMessageW(ctypes.byref(msg))
+        finally:
+            _user32.UnhookWinEvent(hook)
+
+    def _make_hidden_frames_transparent(self) -> None:
+        frames = []
+        try:
+            win32gui.EnumWindows(lambda h, _: frames.append(h) if win32gui.GetClassName(h) == _PPT_FRAME_CLASS
+                                 and not win32gui.IsWindowVisible(h) else None, None)
+        except pywintypes.error:
+            return
+        for hwnd in frames:
+            try:
+                ex = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+                if ex & win32con.WS_EX_LAYERED:
+                    continue  # PowerPoint 가 스스로 쓰는 반투명 창일 수 있음 → 건드리지 않음
+                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex | win32con.WS_EX_LAYERED)
+                self._transparent[hwnd] = ex
+                win32gui.SetLayeredWindowAttributes(hwnd, 0, 0, win32con.LWA_ALPHA)
+            except pywintypes.error:
+                continue
+
+    def __enter__(self):
+        self._thread = threading.Thread(target=self._run, name="FrameHider", daemon=True)
+        self._thread.start()
+        self._ready.wait(2)
+        self._make_hidden_frames_transparent()
+        return self
+
+    def __exit__(self, *exc):
+        # 숨김 이벤트가 큐에 남아 있을 수 있으므로 메시지 루프가 그것까지 처리한 뒤 끝나도록 WM_QUIT 를 뒤에 넣음
+        if self._thread_id:
+            _user32.PostThreadMessageW(self._thread_id, _WM_QUIT, 0, 0)
+        if self._thread is not None:
+            self._thread.join(2)
+        for hwnd, ex in self._transparent.items():  # 숨긴 뒤에 되돌리므로 보이지 않음. 이미 닫힌 창은 무시
+            try:
+                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, ex)
+            except pywintypes.error:
+                pass
+        if self._keep is not None:  # 이 작업과 관계없는 창(사용자가 그사이 연 문서 등)은 되살림
+            for hwnd in list(self.hidden):
+                try:
+                    if not win32gui.IsWindow(hwnd):
+                        self.hidden.remove(hwnd)
+                    elif not self._keep(win32gui.GetWindowText(hwnd)):
+                        _user32.ShowWindow(hwnd, _SW_SHOWNA)
+                        self.hidden.remove(hwnd)
+                except Exception:
+                    continue
+        return False
 
 
 @dataclass
@@ -73,8 +188,9 @@ class PptEngine:
         self.merge_mode = merge_mode
         self.app = None
         self._was_running = False
-        self._prev_window_state = None
-        self._window = None
+        self._window = None          # [원본 서식 유지] 붙여넣기용 문서 창 (숨겨 둠)
+        self._window_hwnds: list[int] = []
+        self._anchor = None          # hold() 가 연 빈 프레젠테이션
         self._prev_alerts = None
         self._prev_security = None
         self._design_cache: dict[tuple[str, str], object] = {}
@@ -116,14 +232,12 @@ class PptEngine:
                     setattr(self.app, attr, prev)
             except Exception:
                 pass
-        try:
-            if self._prev_window_state is not None and self._was_running:
-                self.app.WindowState = self._prev_window_state
-        except Exception:
-            pass
+        self.release()
         try:
             if self.app is not None and not self._was_running and self.app.Presentations.Count == 0:
-                self.app.Quit()
+                _empty_clipboard()  # 붙여넣기로 남은 슬라이드가 클립보드에 있으면 종료가 수 초 늦어진다 (실측 5.5초)
+                with _FrameHider():  # 종료 직전에 잠깐 뜨는 빈 PowerPoint 창 숨김
+                    self.app.Quit()
         except Exception:
             pass
         self.app = None
@@ -132,6 +246,23 @@ class PptEngine:
             shutil.rmtree(self._tmp, ignore_errors=True)
         pythoncom.CoUninitialize()
         return False
+
+    def hold(self) -> None:
+        """Bible2PPT 를 실행하는 동안 PowerPoint 를 켜 둔다. Bible2PPT 는 실행 중인 PowerPoint 를 같이 쓰고, 열린
+        프레젠테이션이 있으면 끝날 때 종료하지 않는다 → 말씀마다 PowerPoint 를 새로 켜고 끄는 시간을 아낀다."""
+        if self._anchor is None:
+            try:
+                self._anchor = self.app.Presentations.Add(MSO_FALSE)  # WithWindow=False
+            except pywintypes.com_error:
+                self._anchor = None
+
+    def release(self) -> None:
+        if self._anchor is not None:
+            try:
+                self._anchor.Close()
+            except Exception:
+                pass
+            self._anchor = None
 
     def _open(self, path: Path):
         try:
@@ -142,7 +273,9 @@ class PptEngine:
 
     # ------------------------------------------------------------------ 병합
     def merge(self, jobs: list[MergeJob], output: Path, global_replacements: dict[str, str] | None = None,
-              progress: Callable[[int, int, str], None] | None = None) -> Path:
+              progress: Callable[[int, int, str], None] | None = None, open_mode: str = "") -> bool:
+        """jobs 를 이어 붙여 output 에 저장한다. open_mode 가 "open"/"show" 면 저장한 결과를 이 PowerPoint 에서 바로 보여 준다
+        (PowerPoint 를 끄고 다시 켜서 여는 것보다 훨씬 빠름). 보여 줬으면 True — 아니면 False 이고 호출한 쪽이 파일로 연다."""
         if not jobs:
             raise PptEngineError("병합할 PPT 가 없습니다.")
         progress = progress or (lambda *a: None)
@@ -173,31 +306,42 @@ class PptEngine:
                 ranges.append((start, start + count - 1))
                 self.log(f"[{n}/{len(jobs)}] {job.title} — {count}장")
 
-            # 3) 항목별 텍스트 입력 / 치환
+            # 3) 항목별 텍스트 입력 / 치환 → 4) 공통 토큰 치환. 항목 슬라이드들이 전체를 빈틈없이 나누므로 공통 토큰도
+            #    항목별로 같이 처리해 텍스트를 한 번만 읽는다.
+            progress(len(jobs), len(jobs), "텍스트 입력")
             for job, (a, b) in zip(jobs, ranges):
                 if b < a:
                     continue
                 slides = [dest.Slides(i) for i in range(a, b + 1)]
+                texts = self._collect_texts(slides)
                 for k, v in job.replacements.items():
-                    self._replace_in_slides(slides, k, v)
-                self._fill_text(slides, job)  # 값이 없어도 실행: 기본값을 넣거나 남은 토큰을 지움
-
-            # 4) 공통 토큰 치환
-            if global_replacements:
-                all_slides = [dest.Slides(i) for i in range(1, dest.Slides.Count + 1)]
-                for k, v in global_replacements.items():
-                    self._replace_in_slides(all_slides, k, v)
+                    self._replace_in_texts(texts, k, v)
+                self._fill_text(slides, texts, job)  # 값이 없어도 실행: 기본값을 넣거나 남은 토큰을 지움
+                for k, v in (global_replacements or {}).items():
+                    self._replace_in_texts(texts, k, v)
 
             progress(len(jobs), len(jobs), "저장 중")
             dest.Save()
             self.log(f"저장 완료: {output} (총 {dest.Slides.Count}장)")
-            return output
+            if open_mode and self._reveal(dest, open_mode == "show"):
+                dest = None  # 사용자가 보는 창이 됐으므로 닫지 않음
+                return True
+            return False
         finally:
             if dest is not None:
+                mine = Path(output).name
                 try:
-                    dest.Close()
+                    if self._window is not None:
+                        mine = self._window.Caption
                 except Exception:
                     pass
+                try:
+                    # 마지막 창이 닫힐 때 잠깐 뜨는 빈 PowerPoint 창(제목 'PowerPoint' 또는 빈 제목)은 숨긴 채로
+                    with _FrameHider(keep=lambda t: t in ("", "PowerPoint") or _is_title_of(t, mine)):
+                        dest.Close()
+                except Exception:
+                    pass
+                self._window = None
 
     def _apply_slide_size(self, dest) -> None:
         """결과 비율을 지정했으면 베이스(첫 PPT 사본)의 슬라이드 크기를 바꾼다. 이어 붙이는 슬라이드는 이 크기에 맞춰진다.
@@ -240,18 +384,59 @@ class PptEngine:
 
     # ---- 방식 A: PowerPoint [원본 서식 유지] 붙여넣기
     def _ensure_window(self, dest):
+        """붙여넣기용 문서 창. 나타나는 순간 숨기므로 화면에 뜨지 않고, 사용자의 다른 PowerPoint 창도 건드리지 않는다
+        (예전에는 PowerPoint 를 최소화했는데 붙여넣을 때마다 Activate 가 창을 되살려 생성 내내 창이 보였음)."""
         if self._window is not None:
             return self._window
         try:
-            if self._was_running and self._prev_window_state is None:
-                self._prev_window_state = self.app.WindowState
-            win = dest.NewWindow()
-            self.app.WindowState = PP_WINDOW_MINIMIZED
-            win.ViewType = PP_VIEW_NORMAL
+            caption = []
+            with _FrameHider(keep=lambda t: bool(caption) and _is_title_of(t, caption[0])) as hider:
+                win = dest.NewWindow()
+                caption.append(win.Caption)
+                win.ViewType = PP_VIEW_NORMAL
+                win.Activate()
             self._window = win
+            self._window_hwnds = hider.hidden
             return win
         except pywintypes.com_error as e:
             raise PptEngineError(f"작업 창을 열 수 없음: {_com_msg(e)}") from e
+
+    def _activate(self, win) -> None:
+        """ExecuteMso 는 PowerPoint 의 활성 창에 붙여넣는다. 숨긴 창도 활성 상태는 유지되므로 이미 활성이면 그대로 두고
+        (Activate 는 숨긴 창을 다시 보이게 함), 다른 창이 활성이 됐을 때만 숨긴 채로 되돌린다."""
+        try:
+            if self.app.ActiveWindow.Caption == win.Caption:
+                return
+        except pywintypes.com_error:
+            pass
+        caption = win.Caption
+        with _FrameHider(keep=lambda t: _is_title_of(t, caption)):
+            win.Activate()
+
+    def _reveal(self, dest, show: bool) -> bool:
+        """숨겨 둔 작업 창을 결과 창으로 보여 준다 (파일을 다시 열 필요 없이 바로 표시). show 면 슬라이드 쇼 시작."""
+        win = self._window
+        if win is None or not self._window_hwnds:
+            return False  # 창 없는 방식으로만 병합함 → 호출한 쪽이 파일로 연다
+        try:
+            win.View.GotoSlide(1)
+            try:  # PowerPoint 창이 앞으로 나올 수 있게 — 그 프로세스에만 허용 (ASFW_ANY 는 아무 프로세스나 허용)
+                pid = win32process.GetWindowThreadProcessId(self._window_hwnds[-1])[1]
+                ctypes.windll.user32.AllowSetForegroundWindow(pid)
+            except pywintypes.error:
+                pass
+            for hwnd in self._window_hwnds:  # 숨겨 둔 작업 창
+                _user32.ShowWindow(hwnd, _SW_SHOW)
+            win.WindowState = PP_WINDOW_MAXIMIZED
+            win.Activate()
+            _user32.SetForegroundWindow(self._window_hwnds[-1])
+            if show:
+                dest.SlideShowSettings.Run()
+            self._window = None
+            return True
+        except pywintypes.com_error as e:
+            self.log(f"⚠ 결과를 바로 열지 못했습니다: {_com_msg(e)}")
+            return False
 
     def _paste_source_formatting(self, src, dest, retries: int = 3) -> None:
         n = src.Slides.Count
@@ -261,8 +446,8 @@ class PptEngine:
             try:
                 win = self._ensure_window(dest)
                 src.Slides.Range().Copy()
-                time.sleep(0.2)
-                win.Activate()
+                time.sleep(0.05)
+                self._activate(win)
                 win.View.GotoSlide(before)
                 try:
                     win.Panes(1).Activate()  # 썸네일 창에 포커스 → 슬라이드 단위로 붙여넣기
@@ -408,18 +593,39 @@ class PptEngine:
         except pywintypes.com_error:
             return
 
-    def _replace_in_slides(self, slides, find: str, repl: str) -> int:
-        if not find:
-            return 0
-        total = 0
+    def _collect_texts(self, slides) -> list[list]:
+        """슬라이드의 모든 텍스트 범위와 그 글자 [[TextRange, text], ...]. COM 호출은 한 번에 수 ms 라서, 예전처럼 토큰마다
+        모든 도형을 다시 훑고 Replace 를 시도하면 37장 기준 약 10초가 걸렸다 → 글자를 한 번 읽어 두고 토큰이 든 곳만 Replace."""
+        texts = []
         for slide in slides:
             shapes = slide.Shapes
             for i in range(1, shapes.Count + 1):
                 for tr in self._shape_text_ranges(shapes(i)):
-                    total += _replace_all(tr, find, repl)
+                    try:
+                        texts.append([tr, tr.Text])
+                    except pywintypes.com_error:
+                        continue
+        return texts
+
+    @staticmethod
+    def _replace_in_texts(texts: list[list], find: str, repl: str) -> int:
+        if not find:
+            return 0
+        key = find.lower()  # TextRange.Replace 는 기본이 대소문자 무시 → 같은 기준으로 후보를 고름
+        total = 0
+        for entry in texts:
+            if key not in entry[1].lower():
+                continue
+            n = _replace_all(entry[0], find, repl)
+            if n:
+                total += n
+                try:
+                    entry[1] = entry[0].Text
+                except pywintypes.com_error:
+                    pass
         return total
 
-    def _fill_text(self, slides, job: MergeJob) -> None:
+    def _fill_text(self, slides, texts: list[list], job: MergeJob) -> None:
         """값 n 번째 → {{내용n}} 치환, 없으면 이름이 '내용n' 인 텍스트 상자에 입력.
         1번은 예전 템플릿 호환을 위해 {{내용}} / '내용' 도 받는다.
         값이 비었으면 설정의 n 번 기본값을 넣고, 기본값도 비었으면 토큰 글자를 지운다 (결과에 '{{내용2}}' 가 남지 않도록).
@@ -436,11 +642,13 @@ class PptEngine:
             tokens = [t for t in tokens if t]
             if not value:
                 for t in tokens:
-                    self._replace_in_slides(slides, t, "")
+                    self._replace_in_texts(texts, t, "")
                 continue
-            if sum(self._replace_in_slides(slides, t, value) for t in tokens):
+            if sum(self._replace_in_texts(texts, t, value) for t in tokens):
                 continue
-            if not self._fill_shape(slides, [nm for nm in names if nm], value) and given:  # 기본값은 자리가 없어도 경고 안 함
+            if self._fill_shape(slides, [nm for nm in names if nm], value):
+                texts[:] = self._collect_texts(slides)  # 상자 글자가 바뀌었으므로 다시 읽음 (공통 토큰 치환용)
+            elif given:  # 기본값은 자리가 없어도 경고 안 함
                 missing.append(tokens[0] if tokens else (names[0] if names else str(n)))
         if missing and job.warn_missing:
             self.log(f"  ⚠ '{job.title}': 텍스트 입력 위치를 찾지 못했습니다 ({', '.join(missing)}). "
@@ -475,6 +683,25 @@ def _replace_all(text_range, find: str, repl: str, limit: int = 200) -> int:
         count += 1
         after = r.Start + r.Length - 1  # 치환 결과 뒤부터 다시 찾기 (repl 에 find 포함 시 무한루프 방지)
     return count
+
+
+def _is_title_of(title: str, caption: str) -> bool:
+    """창 제목이 그 문서 창의 것인지. 제목은 '이름 - PowerPoint' 이고, 확장자는 탐색기 설정에 따라 빠지기도 한다."""
+    if not caption:
+        return False
+    stem = caption.rsplit(".", 1)[0] if caption.lower().endswith((".pptx", ".pptm", ".ppt")) else caption
+    return title.startswith(caption) or title.startswith(stem + " ") or title == stem
+
+
+def _empty_clipboard() -> None:
+    try:
+        if _user32.OpenClipboard(None):
+            try:
+                _user32.EmptyClipboard()
+            finally:
+                _user32.CloseClipboard()
+    except OSError:
+        pass
 
 
 def _com_msg(e: pywintypes.com_error) -> str:

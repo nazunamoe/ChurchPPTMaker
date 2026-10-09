@@ -55,10 +55,27 @@ def validate_filename_format(fmt: str) -> str | None:
     return None
 
 
+def field_values(date: str, church: str, worship: str, pad: bool = True) -> dict[str, str]:
+    """{항목} 이름(models.FILENAME_FIELDS) → 값. 파일 이름(pad=True: 월·일 0 채움 '07')과 PPT 공통 토큰
+    (pad=False: '7' — 슬라이드에 '10월 7일' 처럼 쓰므로)이 같은 항목을 쓴다."""
+    y, m, d = date.split("-") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) else ("", "", "")
+    try:
+        weekday = "월화수목금토일"[dt.date(int(y), int(m), int(d)).weekday()]  # 한 글자: '일'
+    except ValueError:  # 빈 날짜·없는 날짜(2026-02-30 등)
+        weekday = ""
+    if not pad:
+        m, d = m.lstrip("0") or m, d.lstrip("0") or d
+    return {"날짜": date, "년": y, "월": m, "일": d, "요일": weekday, "교회이름": church, "예배종류": worship}
+
+
+def ppt_replacements(date: str, church: str, worship: str) -> dict[str, str]:
+    """모든 슬라이드에서 바꾸는 공통 토큰 {{날짜}} {{년}} {{월}} {{일}} {{요일}} {{교회이름}} {{예배종류}}."""
+    return {f"{{{{{k}}}}}": v for k, v in field_values(date, church, worship, pad=False).items()}
+
+
 def output_stem(fmt: str, date: str, church: str, worship: str) -> str:
     """형식의 {항목}을 값으로 바꾼 파일 이름(확장자 제외). 전체를 sanitize 해 경로 구분자 등은 제거된다."""
-    y, m, d = date.split("-") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) else ("", "", "")
-    values = {"날짜": date, "년": y, "월": m, "일": d, "교회이름": church, "예배종류": worship}
+    values = field_values(date, church, worship)
     name = _FIELD_RE.sub(lambda mo: values.get(mo.group(1), mo.group(0)), fmt).strip()
     if name.lower().endswith(".pptx"):  # 확장자까지 적었으면 한 번만 붙도록
         name = name[:-5]
@@ -341,6 +358,8 @@ class BuildRequest:
     worship: str
     filename_format: str = DEFAULT_FILENAME_FORMAT
     temp: bool = False  # True: 출력 폴더 대신 임시 폴더에 만들고 오래된 임시 파일 정리
+    open_mode: str = ""  # "open"/"show": 다 만들면 병합에 쓴 PowerPoint 에서 바로 열기(쇼)
+    opened: bool = False  # build 가 결과를 열었으면 True (못 열었으면 호출한 쪽이 파일로 연다)
 
 
 class WorshipBuilder:
@@ -427,39 +446,43 @@ class WorshipBuilder:
             raise BuildError(err)
         tmp = Path(tempfile.mkdtemp(prefix="ChurchPPT_"))
         n_bible = sum(1 for it in req.items if it.kind == KIND_BIBLE)
+        pcfg = self.cfg.get("ppt")
         try:
-            # 1) Bible2PPT 로 성경 PPT 생성 (PowerPoint 를 쓰므로 병합 전에 순차 실행)
-            done = 0
-            for idx, it in enumerate(req.items):
-                if it.kind != KIND_BIBLE:
-                    continue
-                self.progress(0.4 * done / max(n_bible, 1), f"성경 PPT 생성 중: {it.value}")
-                self.log(f"Bible2PPT: {it.value}")
-                try:
-                    paths[idx] = self.generate_bible(it, tmp / f"bible_{idx:02d}.pptx")
-                except (Bible2PPTError, ValueError) as e:
-                    raise BuildError(f"말씀 '{it.value}' 생성 실패:\n{e}") from e
-                done += 1
-
-            # 2) 병합 작업 목록
-            pcfg = self.cfg.get("ppt")
-            jobs = []
-            for it, p in zip(req.items, paths):
-                title = f"{it.label} {it.display_value if it.kind in (KIND_SERMON, KIND_CCM, KIND_CUSTOM) else it.value}".strip()
-                jobs.append(MergeJob(source=p, title=title, fill_values=it.fill_values,
-                                     warn_missing=it.kind not in (KIND_HYMN, KIND_CCM)))
-
-            base = 0.4 if n_bible else 0.0
-
-            def on_progress(i, total, label):
-                self.progress(base + (1 - base) * i / max(total, 1), f"병합 중: {label}")
-
+            # PowerPoint 를 먼저 켜 두고 Bible2PPT 가 같이 쓰게 한다 (말씀마다 PowerPoint 를 켜고 끄지 않음, PptEngine.hold)
             with PptEngine(self.log, pcfg.get("text_placeholder", ""), pcfg.get("text_shape_name", ""),
                            pcfg.get("merge_mode") or MERGE_SOURCE_FORMATTING, pcfg.get("fill_defaults"),
                            pcfg.get("slide_size") or "original") as eng:
-                result = eng.merge(jobs, output, {
-                    "{{교회이름}}": req.church, "{{날짜}}": req.date, "{{예배종류}}": req.worship,
-                }, on_progress)
+                # 1) Bible2PPT 로 성경 PPT 생성 (PowerPoint 를 쓰므로 병합 전에 순차 실행)
+                if n_bible:
+                    eng.hold()
+                done = 0
+                for idx, it in enumerate(req.items):
+                    if it.kind != KIND_BIBLE:
+                        continue
+                    self.progress(0.4 * done / max(n_bible, 1), f"성경 PPT 생성 중: {it.value}")
+                    self.log(f"Bible2PPT: {it.value}")
+                    try:
+                        paths[idx] = self.generate_bible(it, tmp / f"bible_{idx:02d}.pptx")
+                    except (Bible2PPTError, ValueError) as e:
+                        raise BuildError(f"말씀 '{it.value}' 생성 실패:\n{e}") from e
+                    done += 1
+                eng.release()
+
+                # 2) 병합 작업 목록
+                jobs = []
+                for it, p in zip(req.items, paths):
+                    title = f"{it.label} {it.display_value if it.kind in (KIND_SERMON, KIND_CCM, KIND_CUSTOM) else it.value}".strip()
+                    jobs.append(MergeJob(source=p, title=title, fill_values=it.fill_values,
+                                         warn_missing=it.kind not in (KIND_HYMN, KIND_CCM)))
+
+                base = 0.4 if n_bible else 0.0
+
+                def on_progress(i, total, label):
+                    self.progress(base + (1 - base) * i / max(total, 1), f"병합 중: {label}")
+
+                req.opened = eng.merge(jobs, output, ppt_replacements(req.date, req.church, req.worship),
+                                       on_progress, req.open_mode)
+            result = output
             if req.temp:
                 removed = prune_temp_results(pcfg.get("temp_keep"), out_dir)
                 if removed:

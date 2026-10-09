@@ -17,7 +17,7 @@ CUSTOM_TEXT_KEYS = {2: "text2", 3: "text3"}  # 사용자 지정 항목의 {{내�
 BIBLE_KEYS = ("bible", "bible2")  # 말씀 항목의 역본1·역본2 (options 키). 역본2 는 Bible2PPT 에서 나란히 배치
 
 # 결과 파일 이름 형식 (프리셋별로 다르게 저장 가능). {항목} 자리에 값이 들어감 — worship_builder.output_filename
-FILENAME_FIELDS = ("날짜", "년", "월", "일", "교회이름", "예배종류")
+FILENAME_FIELDS = ("날짜", "년", "월", "일", "요일", "교회이름", "예배종류")
 DEFAULT_FILENAME_FORMAT = "{날짜}_{교회이름}_{예배종류}"
 
 KIND_LABELS = {

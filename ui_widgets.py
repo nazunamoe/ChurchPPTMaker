@@ -4,8 +4,10 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 import queue
+import re
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Any, Callable
@@ -43,7 +45,7 @@ KIND_COLORS = {
 
 
 MERGE_MODES = {
-    "원본 서식 유지 (권장, PowerPoint 최소화 창 사용)": "source_formatting",
+    "원본 서식 유지 (권장)": "source_formatting",
     "창 없이 병합 (배경은 복제/이미지화)": "windowless",
 }
 
@@ -699,9 +701,7 @@ class ItemDialog(_Modal):
 class SettingsDialog(_Modal):
     """설정 창. Bible2PPT.exe 를 지정하면 --list-bibles 로 역본 목록을 바로 불러와 기본 역본 목록을 채운다.
     저장 시 불러온 목록은 config.bible2ppt.bible_list 에 캐시된다.
-    항목이 많아 한 화면에 두면 최소 창 높이를 넘으므로 두 쪽으로 나눈다. 두 쪽은 같은 grid 칸에 겹쳐 두고
-    선택한 쪽만 위로 올린다 → 칸 크기가 큰 쪽에 맞춰져서 쪽을 바꿔도 창 크기가 흔들리지 않음."""
-    PAGES = ("Bible2PPT · 설교", "병합 · 텍스트 입력")
+    항목이 많아 한 화면에 다 보이지 않으므로 한 쪽에 모두 두고 세로로 스크롤한다(높이는 메인 창에 맞춤, _fit_body)."""
 
     def __init__(self, master, cfg):
         super().__init__(master, "설정")
@@ -714,17 +714,10 @@ class SettingsDialog(_Modal):
         self._loaded_for = cfg.resolve_file(b.get("exe_path", "")) if self.bible_values else None
         self._loading_for = None
 
-        self.page_seg = ctk.CTkSegmentedButton(self, values=list(self.PAGES), font=font(13), height=32,
-                                               selected_color=ACCENT, command=self._show_page)
-        self.page_seg.pack(anchor="w", padx=16, pady=(12, 0))
-        stack = ctk.CTkFrame(self, fg_color="transparent")
-        stack.pack(fill="both", expand=True, padx=16, pady=(8, 8))
-        self._pages: dict[str, ctk.CTkFrame] = {}
-        for name in self.PAGES:
-            page = card(stack)
-            page.grid(row=0, column=0, sticky="nsew")
-            self._pages[name] = page
-        body = self._pages[self.PAGES[0]]  # 아래 section/row 는 지금의 body 쪽에 배치
+        self.body = body = ctk.CTkScrollableFrame(self, fg_color=CARD, corner_radius=10, border_width=1,
+                                                  border_color=BORDER)
+        body.pack(fill="both", expand=True, padx=16, pady=(12, 8))
+        body._parent_canvas.configure(yscrollincrement=max(1, scaled(self, 2.4)))  # 휠 한 칸 ≈ 48px (CTk 기본 20px)
         r = 0
 
         def section(text):
@@ -781,7 +774,6 @@ class SettingsDialog(_Modal):
                      text_color=TEXT2, anchor="w").grid(row=r, column=1, columnspan=2, sticky="w", pady=(0, 14))
         r += 1
 
-        body, r = self._pages[self.PAGES[1]], 0
         section("PPT 병합")
         self.merge_mode = ctk.CTkComboBox(body, width=320, values=list(MERGE_MODES), state="readonly",
                                           font=font(13), dropdown_font=font(13))
@@ -815,7 +807,7 @@ class SettingsDialog(_Modal):
                                 "  1번: 기도자 이름 · 찬송 장 · 설교 제목 · 사용자 지정 내용1\n"
                                 "  2번: 설교자 · 사용자 지정 내용2      3번: 사용자 지정 내용3\n"
                                 "토큰이 없으면 같은 이름의 텍스트 상자에 입력합니다. 번호 없는 기본형은 1번으로 취급합니다(예전 템플릿 호환).\n"
-                                "공통 토큰: {{교회이름}} {{날짜}} {{예배종류}}",
+                                "공통 토큰(모든 슬라이드): {{날짜}} {{년}} {{월}} {{일}} {{요일}} {{교회이름}} {{예배종류}}",
                      font=font(11), text_color=TEXT2, justify="left").grid(
             row=r, column=0, columnspan=3, padx=16, pady=(2, 6), sticky="w")
         r += 1
@@ -846,8 +838,7 @@ class SettingsDialog(_Modal):
                      font=font(11), text_color=TEXT2, anchor="w", justify="left").grid(
             row=r, column=1, columnspan=2, sticky="w", pady=(0, 14))
         r += 1
-        self.page_seg.set(self.PAGES[0])
-        self._show_page(self.PAGES[0])
+        self._fit_body()
 
         btns = ctk.CTkFrame(self, fg_color="transparent")
         btns.pack(fill="x", padx=16, pady=(4, 16))
@@ -869,9 +860,27 @@ class SettingsDialog(_Modal):
         for n, lbl in enumerate(self._default_labels, 1):
             lbl.configure(text=numbered_token(base, n) if base else f"{n}번")
 
-    def _show_page(self, name: str):
-        self.page_seg.set(name)
-        self._pages[name].tkraise()
+    def _fit_body(self):
+        """스크롤 영역 크기: 너비는 내용에 맞추고, 높이는 내용과 메인 창(제목·버튼 자리를 뺀 만큼) 중 작은 쪽."""
+        self.body.update_idletasks()
+        s = ctk.ScalingTracker.get_widget_scaling(self)
+        inner = self.body  # CTkScrollableFrame 자체가 내용 틀 (캔버스 안에 배치됨)
+        req_w, req_h = inner.winfo_reqwidth() / s, inner.winfo_reqheight() / s
+        win_h = self._win.winfo_height() / s
+        # 다이얼로그는 창 높이 45% 지점에 가운데 맞춤(_Modal.show) → 전체가 창 높이의 90% 안이어야 위가 잘리지 않음.
+        # 스크롤 영역 밖(제목·버튼·여백)은 약 170
+        self.body.configure(width=int(req_w) + 4, height=int(max(240, min(req_h, win_h * 0.9 - 170))))
+
+    def _reveal(self, widget) -> None:
+        """입력 오류가 난 칸이 보이도록 스크롤하고 포커스 (예전 두 쪽 설정 창의 쪽 넘기기 대신)."""
+        try:
+            canvas = self.body._parent_canvas
+            total = max(self.body.winfo_height(), 1)
+            y = widget.winfo_rooty() - self.body.winfo_rooty()
+            canvas.yview_moveto(max(0.0, (y - scaled(self, 40)) / total))
+            widget.focus_set()
+        except tk.TclError:
+            pass
 
     def _browse_exe(self):
         if self._browse(self.exe, [("Bible2PPT", "*.exe")]):
@@ -942,19 +951,19 @@ class SettingsDialog(_Modal):
             if timeout < 10:
                 raise ValueError
         except ValueError:
-            self._show_page(self.PAGES[0])
+            self._reveal(self.timeout)
             messagebox.showerror("입력 오류", "실행 제한 시간은 10 이상의 숫자로 입력해 주세요.", parent=self)
             return
         exe_raw = self.exe.get().strip()
         if exe_raw and not exe_raw.lower().endswith(".exe"):
-            self._show_page(self.PAGES[0])
+            self._reveal(self.exe)
             messagebox.showerror("입력 오류", "Bible2PPT 경로는 .exe 실행 파일이어야 합니다.", parent=self)
             return
         tpl_raw = self.tpl.get().strip()
         if tpl_raw:
             tp = self.cfg.resolve_file(tpl_raw)
             if tp.suffix.lower() != ".pptx" or not tp.is_file():
-                self._show_page(self.PAGES[0])
+                self._reveal(self.tpl)
                 messagebox.showerror("입력 오류", "성경 템플릿은 존재하는 .pptx 파일이어야 합니다\n"
                                      f"(매크로가 들어갈 수 있는 .pptm 등은 사용할 수 없음):\n{tpl_raw}", parent=self)
                 return
@@ -962,17 +971,17 @@ class SettingsDialog(_Modal):
         if sermon_raw:
             sp = self.cfg.resolve_file(sermon_raw)
             if not sp.is_file() or sp.suffix.lower() not in PPT_EXTS:
-                self._show_page(self.PAGES[0])
+                self._reveal(self.sermon_file)
                 messagebox.showerror("입력 오류", f"설교 템플릿 PPT 파일을 찾을 수 없습니다:\n{sermon_raw}", parent=self)
                 return
         bible1, bible2 = self.bible.get().strip(), self.bible2.get().strip()
         if bible2 and not bible1:
-            self._show_page(self.PAGES[0])
+            self._reveal(self.bible)
             messagebox.showerror("입력 오류", "두 번째 기본 역본을 쓰려면 기본 성경 역본도 지정해 주세요.", parent=self)
             return
         keep_raw = self.temp_keep.get().strip()
         if not (keep_raw.isascii() and keep_raw.isdigit()) or not 1 <= int(keep_raw) <= TEMP_KEEP_MAX:
-            self._show_page(self.PAGES[1])
+            self._reveal(self.temp_keep)
             messagebox.showerror("입력 오류", f"임시 파일 최대 보관 개수는 1~{TEMP_KEEP_MAX} 사이 숫자로 입력해 주세요.",
                                  parent=self)
             return
@@ -1069,6 +1078,211 @@ class LogDialog(_Modal):
         box.insert("1.0", "\n".join(lines) or "로그가 없습니다.")
         box.configure(state="disabled")
         accent_button(self, "닫기", self.destroy, width=96).pack(anchor="e", padx=20, pady=(0, 16))
+
+
+# ---------------------------------------------------------------- 도움말
+class HelpDialog(_Modal):
+    """도움말 (help_content.HELP_SECTIONS). 왼쪽 목차 클릭 → 그 절로 이동, 위 검색칸 Enter → 다음 찾기.
+    본문은 Text 위젯 하나에 태그로 꾸며 그린다 (절·표마다 위젯을 만들면 수백 개가 되어 느림 — CLAUDE.md §11).
+    CTkTextbox 는 태그 글꼴을 막아 두었으므로(배율 때문) 안쪽 tk.Text 에 배율을 반영한 픽셀 글꼴(tk_font)로 직접 지정."""
+    _MARKUP = re.compile(r"(`[^`]+`|\*\*[^*]+\*\*)")
+
+    def __init__(self, master):
+        from help_content import HELP_SECTIONS  # 도움말을 열 때만 읽음
+        super().__init__(master, "도움말")
+        self._sections = HELP_SECTIONS
+        self._last_found = "1.0"
+        self._chosen: int | None = None  # 목차에서 마지막으로 고른 절
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=20, pady=(10, 0))
+        # 창이 뜨면 검색칸에 포커스가 가서 안내 문구(placeholder)가 안 보이므로 앞에 이름표를 둠
+        ctk.CTkLabel(top, text="🔍 검색", font=font(13), text_color=TEXT2).pack(side="left", padx=(0, 8))
+        self.search = ctk.CTkEntry(top, width=260, height=32, font=font(13), placeholder_text="찾을 낱말 (Enter: 다음)")
+        self.search.pack(side="left")
+        self.search.bind("<Return>", lambda e: self._find_next())
+        self.search.bind("<KeyRelease>", self._on_search_key)
+        self.found_label = ctk.CTkLabel(top, text="", font=font(12), text_color=TEXT2)
+        self.found_label.pack(side="left", padx=10)
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=20, pady=10)
+        nav_box = ctk.CTkFrame(body, fg_color=CARD, corner_radius=8, border_width=1, border_color=BORDER)
+        nav_box.pack(side="left", fill="y", padx=(0, 10))
+        self.nav = tk.Listbox(nav_box, activestyle="none", borderwidth=0, highlightthickness=0, exportselection=False,
+                              font=tk_font(self, 13), width=0, cursor="hand2", bg=_pick(CARD), fg=_pick(TEXT),
+                              selectbackground=_pick(ACCENT), selectforeground="#FFFFFF")
+        self.nav.pack(fill="both", expand=True, padx=scaled(self, 6), pady=scaled(self, 6))
+        for title, _ in self._sections:
+            self.nav.insert("end", "  " + title)
+        self.nav.bind("<<ListboxSelect>>", lambda e: self._go(self.nav.curselection()))
+
+        win_h = self._win.winfo_height() / ctk.ScalingTracker.get_widget_scaling(self)
+        self.box = ctk.CTkTextbox(body, width=640, height=int(max(300, win_h * 0.9 - 190)), font=font(13),
+                                  corner_radius=8, border_width=1, border_color=BORDER, fg_color=CARD, wrap="word",
+                                  activate_scrollbars=True)
+        self.box.pack(side="left", fill="both", expand=True)
+        self.text = self.box._textbox
+        self.text.configure(spacing1=scaled(self, 2), spacing3=scaled(self, 2), padx=scaled(self, 14),
+                            pady=scaled(self, 10), cursor="arrow")
+        sb_set = self.box._y_scrollbar.set
+        self.text.configure(yscrollcommand=lambda a, b: (sb_set(a, b), self._sync_nav()))
+        self._render()
+        self.text.configure(state="disabled")
+        self.box.bind("<Button-1>", lambda e: self.text.focus_set())  # 휠·키보드 스크롤
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.pack(fill="x", padx=20, pady=(0, 16))
+        accent_button(btns, "닫기", self.destroy, width=96).pack(side="right")
+        self.nav.selection_set(0)
+
+    # ---- 그리기
+    def _render(self):
+        t = self.text
+        base = tk_font(self, 13)
+        t.tag_configure("h1", font=tk_font(self, 19, "bold"), foreground=_pick(TEXT),
+                        spacing1=scaled(self, 18), spacing3=scaled(self, 8))
+        t.tag_configure("h2", font=tk_font(self, 15, "bold"), foreground=_pick(TEXT),
+                        spacing1=scaled(self, 14), spacing3=scaled(self, 4))
+        t.tag_configure("bold", font=tk_font(self, 13, "bold"))
+        t.tag_configure("code", foreground=_pick(ACCENT), font=tk_font(self, 13, "bold"))
+        t.tag_configure("note", foreground=_pick(TEXT2), font=tk_font(self, 12),
+                        lmargin1=scaled(self, 10), lmargin2=scaled(self, 10))
+        t.tag_configure("found", background=_pick(("#FFE58F", "#7A5C00")))
+        t.tag_raise("code", "note")  # 참고 문장(흐린 글씨) 안의 `글자` 도 강조색으로
+        for level in (0, 1):
+            ind = scaled(self, 8 + 18 * level)
+            t.tag_configure(f"bullet{level}", lmargin1=ind, lmargin2=ind + scaled(self, 16))
+        measure = tkfont.Font(font=base)
+        bold_measure = tkfont.Font(font=tk_font(self, 13, "bold"))
+        for i, (title, text) in enumerate(self._sections):
+            if i:
+                t.insert("end", "\n")
+            t.mark_set(f"sec{i}", "end-1c")
+            t.mark_gravity(f"sec{i}", "left")
+            t.insert("end", title + "\n", "h1")
+            lines = text.rstrip("\n").split("\n")
+            n = 0
+            while n < len(lines):
+                line = lines[n]
+                if line.startswith("|"):  # 표: 이어지는 | 줄을 모아 열 너비를 맞춤
+                    rows = []
+                    while n < len(lines) and lines[n].startswith("|"):
+                        rows.append([c.strip() for c in lines[n].strip().strip("|").split("|")])
+                        n += 1
+                    self._table(rows, f"tbl{i}_{n}", measure, bold_measure)
+                    continue
+                if line.startswith("## "):
+                    t.insert("end", line[3:] + "\n", "h2")
+                elif line.lstrip().startswith("- "):
+                    level = 1 if line.startswith("  ") else 0
+                    self._inline("•  " + line.lstrip()[2:], (f"bullet{level}",))
+                elif line.startswith("> "):
+                    self._inline(line[2:], ("note",))
+                else:
+                    self._inline(line, ())
+                n += 1
+
+    def _inline(self, text: str, tags: tuple, end: str = "\n"):
+        for part in self._MARKUP.split(text):
+            if not part:
+                continue
+            if part.startswith("`") and part.endswith("`") and len(part) > 1:
+                self.text.insert("end", part[1:-1], tags + ("code",))
+            elif part.startswith("**") and part.endswith("**") and len(part) > 3:
+                self.text.insert("end", part[2:-2], tags + ("bold",))
+            else:
+                self.text.insert("end", part, tags)
+        if end:
+            self.text.insert("end", end, tags)
+
+    def _table(self, rows: list[list[str]], tag: str, measure, bold_measure):
+        """칸 사이는 탭, 탭 위치는 각 열의 가장 긴 글자에 맞춤 (너무 긴 열은 잘라서 다음 열이 밀려나지 않게).
+        마지막 열이 길어 줄이 바뀌면 그 열 시작 위치에 맞춰 이어짐(lmargin2)."""
+        plain = [[self._MARKUP.sub(lambda m: m.group(0).strip("`*"), c) for c in r] for r in rows]
+        cols = max(len(r) for r in plain)
+        gap, cap = scaled(self, 22), scaled(self, 300)
+        indent = scaled(self, 8)
+        stops, x = [], indent
+        for c in range(cols - 1):
+            w = max((bold_measure if ri == 0 else measure).measure(r[c]) for ri, r in enumerate(plain) if c < len(r))
+            x += min(w, cap) + gap
+            stops.append(x)
+        self.text.tag_configure(tag, tabs=tuple(stops) or None, lmargin1=indent, lmargin2=stops[-1] if stops else indent,
+                                spacing1=scaled(self, 3), spacing3=scaled(self, 3))
+        self.text.tag_configure(tag + "_head", font=tk_font(self, 13, "bold"))
+        for ri, r in enumerate(rows):
+            extra = (tag + "_head",) if ri == 0 else ()
+            for c, cell in enumerate(r):
+                if c:
+                    self.text.insert("end", "\t", (tag,) + extra)
+                if ri == 0:
+                    self.text.insert("end", self._MARKUP.sub(lambda m: m.group(0).strip("`*"), cell), (tag,) + extra)
+                else:
+                    self._inline(cell, (tag,), end="")
+            self.text.insert("end", "\n", (tag,) + extra)
+
+    # ---- 목차·검색
+    def _go(self, sel):
+        if sel:
+            self._chosen = sel[0]
+            self.text.yview(f"sec{sel[0]}")
+            self._sync_nav()  # 이미 끝까지 내려가 있으면 스크롤 이벤트가 없으므로 직접 맞춤
+
+    def _sync_nav(self):
+        """보이는 맨 위 줄이 속한 절을 목차에서 선택 표시. 끝까지 내렸으면 마지막 절은 맨 위로 올 수 없으므로
+        화면에 제목이 보이는 마지막 절을 고름 (목차에서 마지막 절을 눌렀을 때 그 앞 절이 선택되지 않게)."""
+        top = self.text.index("@0,0")
+        at_end = self.text.yview()[1] >= 0.999
+        bottom = self.text.index(f"@0,{self.text.winfo_height()}")
+        current = 0
+        for i in range(len(self._sections)):
+            if self.text.compare(f"sec{i}", "<=", bottom if at_end else top):
+                current = i
+        # 끝부분 절을 목차에서 골랐으면(맨 위로 올 수 없어 뒤 절 제목도 보임) 고른 절 제목이 보이는 동안은 그 절로
+        chosen = self._chosen
+        if at_end and chosen is not None and self.text.compare(f"sec{chosen}", ">=", top)                 and self.text.compare(f"sec{chosen}", "<=", bottom):
+            current = chosen
+        if self.nav.curselection() != (current,):
+            self.nav.selection_clear(0, "end")
+            self.nav.selection_set(current)
+            self.nav.see(current)
+
+    def _on_search_key(self, event):
+        if event.keysym in ("Return", "Up", "Down", "Left", "Right"):
+            return
+        self._last_found = "1.0"  # 검색어가 바뀌면 처음부터
+        self._highlight()
+
+    def _highlight(self) -> int:
+        t = self.text
+        t.tag_remove("found", "1.0", "end")
+        word = self.search.get().strip()
+        if not word:
+            self.found_label.configure(text="")
+            return 0
+        count, pos = 0, "1.0"
+        while True:
+            pos = t.search(word, pos, "end", nocase=True)
+            if not pos:
+                break
+            end = f"{pos}+{len(word)}c"
+            t.tag_add("found", pos, end)
+            pos, count = end, count + 1
+        self.found_label.configure(text=f"{count}건" if count else "찾는 내용이 없습니다", text_color=TEXT2 if count else DANGER)
+        return count
+
+    def _find_next(self):
+        if not self._highlight():
+            return
+        t = self.text
+        start = self._last_found
+        pos = t.search(self.search.get().strip(), f"{start}+1c", "end", nocase=True) or \
+            t.search(self.search.get().strip(), "1.0", "end", nocase=True)
+        if pos:
+            self._last_found = pos
+            t.see(pos)
+
+    def on_shown(self):
+        self.search.focus_set()
 
 
 # ---------------------------------------------------------------- 드래그 & 드롭

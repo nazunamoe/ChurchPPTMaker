@@ -30,6 +30,7 @@
 ChurchPPTMaker/
 ├─ CLAUDE.md           이 문서
 ├─ README.md           사용자용 소개·빌드·사용 방법 (기능/설정이 바뀌면 함께 갱신)
+├─ help_content.py     프로그램 안 도움말 내용 (HELP_SECTIONS: 절 제목 + 간단한 표기). 사용법이 바뀌면 README 와 함께 갱신
 ├─ requirements.txt    실행 패키지 / requirements-build.txt  빌드용(+PyInstaller)
 ├─ build.bat, build.ps1  exe 빌드 스크립트 (.venv 자동 생성, -Version 으로 버전 변경)
 ├─ version.py          프로그램 버전·이름 (화면 제목과 exe 버전 정보의 기준)
@@ -37,7 +38,7 @@ ChurchPPTMaker/
 ├─ main.py             진입점 + 메인 윈도우(App), 패널 구성, 드래그&드롭, 프리셋/생성 이벤트
 ├─ ui_widgets.py       재사용 위젯: 공통 색/폰트, _Modal(창 내부 오버레이 다이얼로그), CalendarPopup, ItemDialog,
 │                      BiblePicker(역본 검색 창)/BibleField(입력칸+🔍),
-│                      SettingsDialog(2쪽: Bible2PPT·기도·설교 / 병합·텍스트·임시 파일), TempFilesDialog, LogDialog, DragController, 스레드→UI 큐(post_to_ui/run_in_thread)
+│                      SettingsDialog(한 쪽 세로 스크롤), HelpDialog, TempFilesDialog, LogDialog, DragController, 스레드→UI 큐(post_to_ui/run_in_thread)
 ├─ models.py           ServiceItem 데이터 모델 + 항목 종류(KIND_*) 정의, 입력 검증
 ├─ config_manager.py   config.json / presets.json 읽기·쓰기, 기본값 병합, 프리셋 규칙 검증
 ├─ bible_bridge.py     Bible2PPT CLI 래퍼 (구절 정규화/검증, 실행, --list-bibles)
@@ -56,7 +57,7 @@ ChurchPPTMaker/
 ## 4. UI 레이아웃 (최초 UI 초안 기준)
 초안의 단일 창 구조를 **우측 "순서" 패널**로 그대로 옮기고, 추가 요구사항(폴더/파일/성경 폼)을 좌측 패널로 확장했다.
 ```
-┌ 예배 순서 PPT 제작 프로그램 v1.0.0 ─────────────── [라이트|다크|시스템] [⚙ 설정] ┐
+┌ 예배 순서 PPT 제작 프로그램 v1.0.0 [? 도움말] ──── [라이트|다크|시스템] [⚙ 설정] ┐
 │ 교회 이름 [________]  날짜 [YYYY-MM-DD][📅][금일 지정]  예배 종류 [________]     │
 │ 출력 폴더 [____][📁][↗]  파일 이름 [{날짜}_{교회이름}_{예배종류}][항목 ▾][기본값]      │
 │                                    → 2026-10-11_사랑교회_주일오전예배.pptx          │
@@ -66,17 +67,26 @@ ChurchPPTMaker/
 │  기도/찬송가/CCM        │ ┌──────────────────────────────────────────────┐ │
 │ 템플릿 파일 (폴더/검색) │ │ ⋮⋮ [예배로 부름]────────[인도자]   ▲ ▼ ✕      │ │
 │  → 드래그/더블클릭 추가 │ │ ⋮⋮ [기도]──────────────[OOO장로]  ▲ ▼ ✕      │ │
-│ 성경 구절 추가          │ │ ⋮⋮ [찬송]──────────────[29장]     ▲ ▼ ✕      │ │
-│  (Bible2PPT 연동)       │ │ ⋮⋮ [말씀]──────────────[요3:16]   ▲ ▼ ✕      │ │
-│  [구절][역본1🔍][↻][추가]│ └──────────────────────────────────────────────┘ │
+│ 성경 구절 추가 [↻][추가]│ │ ⋮⋮ [찬송]──────────────[29장]     ▲ ▼ ✕      │ │
+│  [구절]                 │ │ ⋮⋮ [CCM]───────────────────────   ▲ ▼ ✕      │ │
+│  기본 성경 역본 [  ][🔍] │ │        [아주 긴 곡 제목 … (아랫줄)]           │ │
+│  두 번째 성경 역본[  ][🔍]│ └──────────────────────────────────────────────┘ │
 │                         │ [기도][찬송][말씀][설교][CCM][사용자 지정] ← 드래그&드롭 │
 ├─────────────────────────┴───────────────────────────────────────────────────┤
 │ 상태 메시지 / 진행바  [로그]     [✓ 생성 후 열기] [☐ 슬라이드 쇼로 시작] [예배 PPT 병합 및 생성] │
-│                      [임시 파일] 슬라이드 비율 [원본|16:9|4:3]    [☐ 저장 없이 임시 파일로 실행] │
+│ 부연 설명(최대 2줄)  [임시 파일] 슬라이드 비율 [원본|16:9|4:3]    [☐ 저장 없이 임시 파일로 실행] │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 - 파일 이름: 결과 파일 이름 형식 입력칸 + [항목 ▾](tk.Menu 로 커서 위치에 `{항목}` 삽입) + [기본값] + 실시간 미리보기(잘못되면 ⚠).
   상단 카드는 두 줄 틀(line1/line2)을 카드 안쪽으로 들여 배치 — 투명 틀이 카드 색으로 칠해져 둥근 테두리를 덮기 때문.
+- 하단 상태: `_set_status(text, detail)` — text 는 상태 한 줄, detail(저장 방법·경고 수 등 부연)은 진행 막대 아랫줄
+  (`status_detail`, 칸 너비로 줄 바꿈 — 하단 바 높이는 오른쪽 버튼 두 줄이 정해서 두 줄까지는 바가 커지지 않음).
+  한 줄에 이어 쓰면 최소 창 폭에서 뒷부분이 잘렸음.
+- 성경 구절 추가: 제목 줄 오른쪽에 [↻](역본 목록 다시 불러오기)·[순서에 추가], 아래 역본 두 칸 왼쪽에 '기본 성경 역본'·'두 번째 성경 역본'.
+- 도움말(`HelpDialog`, 제목 오른쪽 [? 도움말]): 왼쪽 목차(tk.Listbox, 클릭하면 그 절로) + 본문 Text 하나(태그로 제목·표·
+  글머리·강조) + 위 검색칸(입력하면 모두 표시, Enter 다음 찾기). 내용은 `help_content.HELP_SECTIONS` — 표기는 그 파일 머리말.
+  CTkTextbox 는 태그 font 를 막으므로 안쪽 `_textbox` 에 `tk_font` 로 지정. 표는 열마다 가장 긴 글자로 탭 위치를 정함
+  (열 최대 300 논리 px, 넘는 칸은 다음 열을 밀어냄 → 첫 열들은 짧게 쓸 것). 높이는 설정 창과 같은 이유로 창 높이×0.9 기준.
 - 날짜: 입력칸 + 📅 아이콘(달력 팝업, 날짜 클릭 시 입력, 다시 누르거나 바깥 클릭/Esc 시 닫힘) + [금일 지정](오늘 날짜).
 - 다이얼로그(항목 입력/설정/로그)와 달력은 **별도 창이 아니라 메인 창 안의 오버레이**(Win11 ContentDialog 스타일). Enter=확인, Esc=취소.
 - 좌측 폴더 줄(`App._folder_row`: 이름·경로·📁·↗): [폴더] 카드에 기도/찬송가/CCM, 템플릿 폴더는 그 파일을 보여 주는
@@ -96,6 +106,12 @@ ChurchPPTMaker/
   CTkButton 은 클릭마다 command 를 부르므로 `_on_pill_click` 이 Windows 더블클릭 간격(최대 500ms)만큼 수정 창을 미뤘다가
   같은 행이 다시 눌리면 열기로 바꾼다. 행 빈 곳·연결선은 `<Double-Button-1>`. 목록을 다시 그리면 예약 취소.
   말씀 열기(Bible2PPT)와 생성은 둘 다 PowerPoint 를 쓰므로 동시에 하지 않음(`_bible_preview`/`building`).
+- 순서 행 줄 바꿈(`App._layout_rows`): 행은 grid `[손잡이][왼쪽 알약][연결선][오른쪽 알약][▲▼✕]`. 한 줄에 안 들어가면
+  오른쪽 알약을 아랫줄(columnspan 1~3, 오른쪽 정렬 — 다른 행의 오른쪽 알약과 끝을 맞춤)로 내리고, 그래도 넘치면 글자를
+  '…' 로 줄임(`_fit_pill`, 알약 여백 = 전체 글자일 때 reqwidth − 글자 폭). 너비는 처음 그릴 때 한 번 재 두고, 목록 캔버스
+  `<Configure>` 마다 grid 만 바꿈(위젯을 다시 만들지 않음). 왼쪽 알약도 너무 길면 줄임.
+- 순서 목록 스크롤: CTk 는 Windows 에서 휠 한 칸 = 20단위 × `yscrollincrement`(기본 1px)라 느렸음 →
+  `ORDER_SCROLL_UNIT`(2.4 논리 px, 배율 반영)로 한 칸 ≈ 행 하나. 배율이 바뀌면 다시 지정. 설정 창 스크롤도 같은 값.
 - 하단 팔레트 버튼(기도/찬송/말씀/설교/CCM/사용자 지정)을 순서 목록으로 **드래그&드롭**하면 놓은 위치에 삽입, 단순 클릭은 맨 아래 추가.
   - 추가 시 입력 다이얼로그: 기도→기도 종류(기도 폴더 PPT 중 선택)+기도자 이름, 찬송→찬송가 장, 말씀→구절, 설교→설교 제목+설교자 (**미입력 시 에러**)
   - CCM→CCM 폴더 파일 검색(검색칸 + tk.Listbox, `bible_bridge.search_names`: 공백 AND·초성) 후 선택 (**미선택 시 에러**)
@@ -137,7 +153,9 @@ ChurchPPTMaker/
      (결과에 `{{내용2}}` 가 남지 않게). 그래서 `_fill_text` 는 값이 없어도 모든 항목에 실행. 이름이 `내용n` 인 상자는
      값·기본값이 없으면 그대로 둔다(상자 글자는 템플릿 문구). 기본값으로만 채운 자리는 못 찾아도 경고하지 않음.
      `TextRange.Replace(…, "")` 로 지우는 동작은 실제 PowerPoint 로 확인함.
-- 전체 공통 토큰(모든 슬라이드): `{{교회이름}}`, `{{날짜}}`, `{{예배종류}}`.
+- 전체 공통 토큰(모든 슬라이드): 파일 이름 항목과 같은 `{{날짜}}` `{{년}}` `{{월}}` `{{일}}` `{{요일}}` `{{교회이름}}` `{{예배종류}}`
+  (`worship_builder.ppt_replacements` ← `field_values(pad=False)`). 파일 이름은 `{월}`·`{일}` 을 0 채움(`04`, 정렬용),
+  PPT 는 0 없이(`4` — `{{월}}월 {{일}}일` 처럼 쓰므로). 항목을 늘릴 때는 `FILENAME_FIELDS`·`field_values` 한 곳만 고치면 둘 다 반영.
 
 ## 6. Bible2PPT 연동 규칙 (bible_bridge.py)
 - 원본 C# 프로그램의 CLI를 subprocess로 호출 (창 숨김, UTF-8 stdout).
@@ -183,12 +201,26 @@ Bible2PPT.exe <성경 구절...> [옵션]
 - `win32com.client.Dispatch("PowerPoint.Application")`, 이미 실행 중이었으면 종료하지 않음.
 - 베이스: 첫 원본을 `SaveAs(출력, 24=pptx)` (원본 100% 유지). 이후 원본은 `config.ppt.merge_mode` 에 따라 이어 붙임:
   - `source_formatting` (기본): `CommandBars.ExecuteMso("PasteSourceFormatting")` = PowerPoint의 [원본 서식 유지] 붙여넣기.
-    테마·마스터·레이아웃·**슬라이드별 배경(그림 포함)**까지 보존. 문서 창이 필요해서 `dest.NewWindow()` 후 PowerPoint를 **최소화**하고,
-    이미 실행 중이던 PowerPoint면 작업 후 창 상태를 복원. 비동기라 슬라이드 수 증가를 폴링으로 확인, 실패 시 해당 파일만 아래 방식으로 대체.
+    테마·마스터·레이아웃·**슬라이드별 배경(그림 포함)**까지 보존. 문서 창이 필요해서 `dest.NewWindow()` 를 쓰되 **화면에 띄우지 않는다**
+    (`_FrameHider`, 아래). 비동기라 슬라이드 수 증가를 폴링으로 확인, 실패 시 해당 파일만 아래 방식으로 대체.
+    ExecuteMso 는 활성 창에 붙여넣으므로 `_activate` 가 `ActiveWindow.Caption` 이 작업 창일 때는 Activate 하지 않는다
+    (Activate 는 숨긴 창을 다시 보이게 함 — 예전엔 최소화해도 붙여넣을 때마다 되살아나 생성 내내 창이 보였음).
   - `windowless`: `Slides.Paste` → 슬라이드별 `Design`(파일+디자인명 캐시)·`CustomLayout` 원본 지정 → 배경 복제
     (단색은 RGB 정확 복사, 그라데이션/그림 등은 원본 도형을 잠시 숨기고 2560px PNG로 내보내 `UserPicture`). 클립보드 실패 시 `InsertFromFile`.
   - ⚠ 그냥 `Slides.Paste`/`InsertFromFile` 만 쓰면 **슬라이드별 배경이 사라진다** (대상 테마 사용과 동일) — 2026-10-06 실험으로 확인.
 - 애니메이션/전환/폰트는 슬라이드 복사 시 그대로 따라온다. 원본 파일은 절대 수정하지 않는다(ReadOnly 열기).
+- 창 숨기기 `_FrameHider`(with 블록, NewWindow·Activate·Close·Quit 때만 짧게): 전용 스레드의 WinEvent 훅(EVENT_OBJECT_SHOW)으로
+  `PPTFrameClass` 창이 보이는 즉시 `SW_HIDE`. 작업 스레드에 걸면 COM 호출 중엔 콜백이 오지 않음(실측). 다른 프로세스 창의
+  ShowWindow 는 PowerPoint UI 스레드가 바쁘면 ~0.25초 늦으므로, 블록에 들어갈 때 PowerPoint 가 미리 숨겨 만들어 둔 문서 창을
+  WS_EX_LAYERED+알파 0 으로 투명하게 해 두고 나갈 때 원래 스타일로 되돌린다(실측: 결과를 보여 주기 전까지 불투명한 창 0회).
+- 결과 열기(`merge(open_mode="open"|"show")`): 저장 후 숨겨 둔 작업 창을 그대로 보여 준다(`_reveal`: 최대화·앞으로·쇼면
+  `SlideShowSettings.Run()`). PowerPoint 를 끄고(`Quit`) `os.startfile` 로 다시 켜는 시간이 없어짐. 창 없는 방식이라 작업 창이
+  없으면 False → `App._open_result` 가 예전처럼 파일로 연다. 쇼를 Esc 로 끝내면 편집 화면이 남는다(Show 동사 `/s` 는 PowerPoint 도 닫힘).
+- 텍스트 입력은 항목 슬라이드의 텍스트를 `_collect_texts` 로 한 번만 읽고 토큰이 든 범위에만 `Replace`(대소문자 무시 비교 —
+  `TextRange.Replace` 기본과 같음). 공통 토큰도 항목별로 같이 처리. 예전처럼 토큰마다 모든 도형을 COM 으로 훑으면 37장에 약 10초.
+- 종료 전에 클립보드를 비운다 — 붙여넣은 슬라이드가 클립보드에 남아 있으면 `Quit` 가 5초 넘게 걸림(실측).
+- 말씀이 있으면 `PptEngine.hold()` 가 빈 프레젠테이션(창 없음)을 열어 둔 채 Bible2PPT 를 실행 → Bible2PPT 는 실행 중인
+  PowerPoint 를 같이 쓰고, 열린 프레젠테이션이 있으면 끝날 때 종료하지 않음(`HiddenPowerPoint.Dispose` 확인). 말씀마다 켜고 끄지 않음.
 - 슬라이드 비율(`config.ppt.slide_size`: original | 16:9 | 4:3, 하단 생성 옵션 아래 `App.size_seg`):
   original 은 첫 PPT 크기. 16:9(960×540pt)·4:3(720×540pt)이면 베이스를 SaveAs 한 직후 `_apply_slide_size` 로
   PageSetup 을 바꾼 뒤 나머지를 이어 붙인다(붙인 슬라이드는 결과 크기에 맞춰짐). COM 크기 변경은 [맞춤 확인]처럼 동작(실측:
@@ -211,7 +243,8 @@ Bible2PPT.exe <성경 구절...> [옵션]
           "merge_mode": "source_formatting", "slide_size": "original", "temp_mode": false, "temp_keep": 10}
 }
 ```
-- `start_slideshow`: 생성 후 열 때 `os.startfile(path, "show")`(= .pptx 의 Show 동사, `POWERPNT.EXE /s`)로 바로 쇼 시작.
+- `open_after_build`·`start_slideshow`: 생성 시작 때 `BuildRequest.open_mode` 로 정해 병합한 PowerPoint 에서 바로 연다(§7 결과 열기).
+  그게 안 됐을 때(`req.opened` False)·[임시 파일]의 쇼는 `os.startfile(path, "show")`(= .pptx 의 Show 동사, `POWERPNT.EXE /s`).
   Show 동사가 없으면 App Paths 의 POWERPNT.EXE `/s`, 그래도 실패하면 일반 열기 + 로그 경고. `open_after_build`·`temp_mode` 가 모두 꺼지면 비활성.
 - `temp_mode`/`temp_keep`: §9-2 임시 실행 모드. `temp_keep` 은 `config_manager.clean_temp_keep` 으로 1~100 정수(잘못된 값은 10).
 - 상대 경로는 프로그램 폴더 기준. 누락 키는 기본값으로 자동 병합. 교회 이름/예배 종류/파일 이름 형식/폴더는 메인 UI에서 바로 저장됨, 나머지는 ⚙ 설정.
@@ -227,7 +260,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
   불러올 때 모르는 kind 는 custom, `validate_item` 실패 줄은 건너뜀.
 
 ## 9-1. 결과 파일 이름 형식 (worship_builder.output_filename)
-- 항목(`models.FILENAME_FIELDS`): `{날짜}`(YYYY-MM-DD) `{년}` `{월}` `{일}`(0 채움, 예 `10`·`07`) `{교회이름}` `{예배종류}`. 기본 `models.DEFAULT_FILENAME_FORMAT`.
+- 항목(`models.FILENAME_FIELDS`): `{날짜}`(YYYY-MM-DD) `{년}` `{월}` `{일}`(0 채움, 예 `10`·`07`) `{요일}`(한 글자, 예 `일`) `{교회이름}` `{예배종류}`. 기본 `models.DEFAULT_FILENAME_FORMAT`.
 - 값을 넣은 **전체 문자열**을 `sanitize_filename` 하고 `.pptx` 를 붙임(형식 끝의 `.pptx` 는 한 번만). 결과가 비면 기본 형식.
 - `validate_filename_format`: 빈 형식·모르는 `{항목}`·쓸 수 없는 문자뿐인 형식은 오류 → 미리보기 ⚠, 프리셋 저장·생성 시 에러 창.
 
@@ -238,7 +271,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
   %TEMP% 는 Windows(저장소 센스·디스크 정리)가 지울 수 있어 보관 개수를 지킬 수 없으므로 쓰지 않음.
 - 이름에 시분초(같으면 `_2`…)를 붙이는 이유: 앞서 연 임시 파일이 PowerPoint 에서 열려 있어도 다음 생성이 덮어쓰지 않게.
   같은 이유로 덮어쓰기 확인 없음. 모드는 생성 시작 때 값으로 고정(생성 중 체크를 바꿔도 이번 생성은 그대로).
-- 보관: 임시 생성이 끝날 때마다 `prune_temp_results(ppt.temp_keep)` 가 최근 N 개만 남김(⚙ 설정 2쪽 '최대 보관 개수' 1~100,
+- 보관: 임시 생성이 끝날 때마다 `prune_temp_results(ppt.temp_keep)` 가 최근 N 개만 남김(⚙ 설정 '최대 보관 개수' 1~100,
   설정을 저장할 때도 바로 정리). PowerPoint 에서 열려 있는 파일은 지울 수 없어 건너뛰고 다음 정리 때 다시 시도.
   목록(`list_temp_results`)은 PowerPoint 잠금 파일 `~$이름.pptx`·링크·.pptx 외 파일을 제외.
 - 하단 [임시 파일](`TempFilesDialog`): 최근순 목록(수정 시각·이름·크기) → [열기]·[슬라이드 쇼]·[다른 이름으로 저장]·[폴더 열기].
@@ -285,6 +318,27 @@ Bible2PPT.exe <성경 구절...> [옵션]
   - 엣지 케이스·보안 점검(28건 자동 테스트, 실제 `mklink /J` 정션)으로 수정: 임시 폴더가 정션이면 정리가 링크 대상 PPT 를
     영구 삭제하던 문제, 원본·출력 폴더가 임시 폴더 안이면 사용자 PPT 가 정리되던 문제, 실패한 임시 생성의 반쯤 만든 파일,
     병합 중 PPT 를 열면 붙여넣기가 그 파일로 갈 수 있던 문제(템플릿 열기는 이전부터), 저장 이름의 장치 이름(CON 등).
+- 2026-10-09: 병합 속도·창 깜빡임 개선 — 작업 창을 숨김(투명+즉시 숨김), 결과를 같은 PowerPoint 에서 바로 열기,
+  텍스트 입력 COM 호출 축소, 종료 전 클립보드 비우기, Bible2PPT 와 PowerPoint 공유.
+  - 검증(실제 자료 11항목·37장, 말씀 1개): 생성 30.7초 + 다시 켜서 열기 → 16.7초에 결과 창 표시까지(쇼 13.5초,
+    PowerPoint 를 이미 켜 둔 경우 11.3초). 창 감시(5ms)로 결과 표시 전 불투명 창 0회(이미 켜 둔 경우 Activate 때 10ms 1회),
+    사용자가 열어 둔 문서 창은 그대로. 이전 엔진 결과와 슬라이드 텍스트 동일·남은 토큰 없음, 결과 창을 닫으면 PowerPoint 종료.
+- 2026-10-09: UI 다듬기 — 상태 부연 설명을 아랫줄로, 성경 영역 버튼을 제목 줄로·역본 칸 이름 표시, 긴 순서 행 줄 바꿈,
+  순서 목록 스크롤 속도, 설정 창을 한 쪽(세로 스크롤)으로 합침(높이 = min(내용, 창 높이×0.9−170): 다이얼로그가 창 45% 지점에
+  가운데 정렬이라 이보다 크면 위가 제목 표시줄 밑으로 잘렸음). 입력 오류 시 `_reveal` 이 그 칸으로 스크롤·포커스.
+  - 검증: 실제 앱 화면 캡처(최소 창: 긴 CCM·설교·사용자 지정 행 아랫줄로, 넓은 창: 한 줄·전체 글자로 복귀, 하단 바 높이 그대로),
+    설정 창 위/아래 스크롤 캡처, 잘못된 보관 개수·제한 시간 저장 시 해당 칸으로 스크롤되고 저장 안 됨.
+
+- 2026-10-09: 제목 옆 [? 도움말] — 처음 설정·순서·말씀·템플릿·자동 문구·파일 이름·찬송가/CCM·프리셋·생성·설정·문제 해결 11절.
+  - 검증: 라이트/다크 화면 캡처, 목차 이동(마지막 절 포함)·검색('요일' 8건) 자동 확인.
+- 2026-10-09 v1.0.7: 위 변경 전체의 엣지 케이스·보안 점검 (함수 20건, 실제 PowerPoint 엔진 21건, UI 39건, 실제 [생성] 버튼 경로).
+  - 엔진: 글자 조각으로 나뉜 토큰·표 칸·그룹·이름 상자(`내용2`) 안 공통 토큰·빈 `{{내용3}}` 삭제, 결과 창이 읽기 전용이 아니어서
+    고쳐 저장 가능, 결과를 닫으면 PowerPoint 종료, 창 없는 방식은 열기 요청에 False(파일로 엶), 손상 파일·말씀 실패 시
+    숨은 창·빈 프레젠테이션·PowerPoint 가 남지 않음, 나중에 연 문서 창이 투명으로 남지 않음.
+  - 수정: `AllowSetForegroundWindow` 를 PowerPoint 프로세스로 한정, 창 숨기는 동안 우연히 숨겨진 사용자 PowerPoint 창 되살리기,
+    작업 창 제목을 못 읽어도 결과 닫기는 계속, 도움말 목차에서 끝부분 절을 고르면 다음 절이 선택되던 문제.
+  - 테스트 주의: 엔진은 끝날 때 자기 스레드의 COM 을 해제하므로, 같은 스레드에서 미리 얻은 PowerPoint 개체는 쓸 수 없게 되고
+    남은 참조는 PowerPoint 종료를 막는다 → 앱처럼 엔진은 작업 스레드(또는 별도 프로세스)에서 돌려 시험할 것.
 
 ## 11. 구현 시 주의사항 (검증된 함정)
 - **CTkToplevel 사용 금지** → `ui_widgets._Modal`(창 내부 오버레이) 상속. CTkToplevel 은 생성 때마다 `bind_all("<Button-1>")`를 누적하고
@@ -340,6 +394,13 @@ Bible2PPT.exe <성경 구절...> [옵션]
   심볼릭 링크면 거부. 출력 폴더 지정(📁) 때와 생성 전(UI·`build`) 모두 확인.
 - 성경 템플릿(`-t`)은 존재하는 **.pptx 만** (`worship_builder.bible_template`, `Bible2PPT.generate`, 설정 저장).
   Bible2PPT 는 자기 PowerPoint 세션에서 열어 이 프로그램의 `AutomationSecurity` 가 미치지 않으므로 .pptm 등 매크로 형식 금지.
+  (생성 때는 `PptEngine.hold()` 로 같은 PowerPoint 를 쓰게 되어 매크로 차단이 미치지만, 말씀 열기·사용자가 켠 PowerPoint 등
+  그렇지 않은 경우가 있으므로 이 제한은 그대로 둔다.)
+- 창 숨기기(`_FrameHider`)는 다른 프로세스 창을 건드리므로: PowerPoint 문서 창 클래스(`PPTFrameClass`)만, NewWindow·Activate·
+  Close·Quit 동안만. 블록 동안 우연히 숨겨진 관계없는 창(제목이 작업 창·빈 PowerPoint 창이 아닌 것)은 블록이 끝나면 다시 보이게
+  하고(`keep`, `_is_title_of`), 투명하게 바꾼 창 스타일은 항상 되돌린다.
+- 결과 창을 앞으로 가져올 때 `AllowSetForegroundWindow` 는 그 PowerPoint 프로세스 ID 에만 (ASFW_ANY 는 아무 프로세스나
+  포커스를 가져갈 수 있게 열어 둠).
 - `os.startfile` 로 폴더를 열 때는 `is_dir()` 확인 후에만 (설정이 실행 파일을 가리키게 조작되면 그 파일이 실행됨).
   PPT 를 열 때(`App._open_ppt`)는 확장자가 `.pptx/.pptm/.ppt` 이고 실제 파일일 때만.
 - 템플릿 삭제는 영구 삭제하지 않고 휴지통으로(되돌릴 수 있게), 삭제 전 확인 창 필수.
@@ -354,6 +415,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
   `options` 는 문자열 값만 유지.
 
 ## 12. 작업 규칙
+- 사용자가 쓰는 기능·규칙·설정을 바꾸면 README.md 와 `help_content.py`(프로그램 안 도움말)를 함께 고친다.
 - UI 배치를 바꿀 때는 §4 초안 구조(순서 패널 = 프리셋 행 / 순서 목록 / 팔레트 행)를 유지한다.
 - 사용자 메시지는 한국어. 모든 입력 검증 실패는 `messagebox.showerror`로 알린다.
 - COM 호출은 반드시 작업 스레드에서, UI 갱신은 `after()`로 메인 스레드에서.

@@ -24,7 +24,7 @@ from config_manager import MAX_PRESETS, ConfigManager, clean_temp_keep, PresetMa
 from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
                     KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, make_item, numbered_token, validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
-                        TEXT2, BibleField, CalendarPopup, DragController, ItemDialog, LogDialog, SettingsDialog, TempFilesDialog,
+                        TEXT2, BibleField, CalendarPopup, DragController, HelpDialog, ItemDialog, LogDialog, SettingsDialog, TempFilesDialog,
                         accent_button, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
@@ -39,6 +39,7 @@ MODES = {"라이트": "Light", "다크": "Dark", "시스템": "System"}
 SLIDE_SIZE_LABELS = {"원본": "original", "16:9": "16:9", "4:3": "4:3"}  # 화면 표시 → config.ppt.slide_size
 MIN_FILE_ROWS = 4  # 최소 창 크기에서도 템플릿 파일 목록이 이만큼은 보이도록
 FILE_FONT_SIZE = 13.2  # 템플릿 파일 목록 글자 크기 (기본 12 의 110% — 항목 줄 높이도 글자 크기를 따라 커짐)
+ORDER_SCROLL_UNIT = 2.4  # 순서 목록 스크롤 단위(논리 px). 휠 한 칸 = 20단위 ≈ 48 = 행 하나 (CTk 기본 1px → 20px)
 RESIZE_SETTLE_MS = 150  # 창 크기 조절이 이 시간 동안 멈추면 그때 내용 배치를 새 크기로 맞춤
 MIN_WIDTH = 1000  # 최소 창 너비 (논리 단위). 처음 열 때도 이 너비 × 최소 높이로 연다
 START_REVEAL_MS = 2000  # 시작 크기 계산이 늦어져도 이 시간 뒤에는 창을 보이게 함
@@ -163,6 +164,8 @@ class App(ctk.CTk):
         self.items: list[ServiceItem] = []
         self.path_vars: dict[str, tk.StringVar] = {}  # 폴더 키 → 화면에 표시하는 경로 (_choose_folder 가 갱신)
         self.row_widgets: list[tk.Frame] = []
+        self._row_parts: list[dict] = []  # 행별 위젯·전체 글자·줄 바꿈 상태 (_layout_rows)
+        self._layout_job = None
         self._shown_files: list[str] = []  # 템플릿 목록 상자에 보이는 순서대로의 파일 이름
         self.selected_file: str | None = None
         self.bible_values: list[str] = list(self.cfg.get("bible2ppt", "bible_list") or [])
@@ -291,6 +294,7 @@ class App(ctk.CTk):
         bar = ctk.CTkFrame(self._content, fg_color="transparent")
         bar.grid(row=0, column=0, sticky="ew", padx=20, pady=(16, 8))
         ctk.CTkLabel(bar, text=APP_TITLE, font=font(20, "bold"), text_color=TEXT).pack(side="left")
+        secondary_button(bar, "?  도움말", self._show_help, width=84).pack(side="left", padx=(12, 0))
         secondary_button(bar, "⚙  설정", self._open_settings, width=88).pack(side="right")
         current = {v: k for k, v in MODES.items()}.get(self.cfg.get("appearance_mode"), "시스템")
         self.mode_seg = ctk.CTkSegmentedButton(bar, values=list(MODES), command=self._set_mode, font=font(12),
@@ -499,24 +503,31 @@ class App(ctk.CTk):
         bc = card(left)
         bc.grid(row=2, column=0, sticky="ew")
         bc.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(bc, text="성경 구절 추가  (Bible2PPT 연동)", font=font(15, "bold"), text_color=TEXT).grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=14, pady=(10, 4))
+        # 제목 줄: 성경 구절 추가 (Bible2PPT) ······ [↻ 역본 목록] [순서에 추가]
+        bhead = ctk.CTkFrame(bc, fg_color="transparent")
+        bhead.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(10, 6))
+        ctk.CTkLabel(bhead, text="성경 구절 추가", font=font(15, "bold"), text_color=TEXT).pack(side="left")
+        ctk.CTkLabel(bhead, text="Bible2PPT", font=font(11), text_color=TEXT2).pack(side="left", padx=(6, 0))
+        accent_button(bhead, "순서에 추가", self._add_bible_from_form, width=96).pack(side="right")
+        secondary_button(bhead, "↻", self._load_bible_list, width=32).pack(side="right", padx=(0, 6))
         self.verse_entry = ctk.CTkEntry(bc, height=34, font=font(13), placeholder_text="예: 창1:1-5, 롬1-3, 요3:16")
         self.verse_entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 6))
         self.verse_entry.bind("<Return>", lambda e: self._add_bible_from_form())
-        # [역본1 🔍][↻][순서에 추가] / [역본2 🔍] — 역본2 를 고르면 Bible2PPT 가 두 역본을 나란히 배치 (-b 두 번)
+        # [기본 성경 역본][역본1 🔍] / [두 번째 성경 역본][역본2 🔍] — 역본2 를 고르면 Bible2PPT 가 두 역본을 나란히 배치 (-b 두 번)
         brow = ctk.CTkFrame(bc, fg_color="transparent")
         brow.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14)
-        brow.grid_columnconfigure(0, weight=1)
-        self.bible_field = BibleField(brow, values=self.bible_values, width=200, font_size=12, placeholder="역본 (비우면 기본값)")
+        brow.grid_columnconfigure(1, weight=1)
+        for r, text in enumerate(("기본 성경 역본", "두 번째 성경 역본")):
+            ctk.CTkLabel(brow, text=text, font=font(12), text_color=TEXT2, anchor="w").grid(
+                row=r, column=0, sticky="w", padx=(0, 8), pady=(6 if r else 0, 0))
+        self.bible_field = BibleField(brow, values=self.bible_values, width=180, font_size=12,
+                                      placeholder="비우면 ⚙ 설정의 기본값")
         self.bible_field.set(self.cfg.get("bible2ppt", "bible") or "")
-        self.bible_field.grid(row=0, column=0, sticky="ew")
-        secondary_button(brow, "↻", self._load_bible_list, width=32).grid(row=0, column=1, padx=4)
-        accent_button(brow, "순서에 추가", self._add_bible_from_form, width=96).grid(row=0, column=2)
-        self.bible2_field = BibleField(brow, values=self.bible_values, width=200, font_size=12,
-                                       placeholder="두 번째 역본 (선택 · 나란히 표시)", clear_text="지정 안 함")
+        self.bible_field.grid(row=0, column=1, sticky="ew")
+        self.bible2_field = BibleField(brow, values=self.bible_values, width=180, font_size=12,
+                                       placeholder="선택 · 두 역본을 나란히 표시", clear_text="지정 안 함")
         self.bible2_field.set(self.cfg.get("bible2ppt", "bible2") or "")
-        self.bible2_field.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.bible2_field.grid(row=1, column=1, sticky="ew", pady=(6, 0))
         self.bible_status = ctk.CTkLabel(bc, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left")
         self.bible_status.grid(row=3, column=0, columnspan=2, sticky="w", padx=14, pady=(4, 10))
 
@@ -546,8 +557,9 @@ class App(ctk.CTk):
         ctk.CTkLabel(head, text="순서", font=font(17, "bold"), text_color=TEXT).pack(side="left")
         self.count_label = ctk.CTkLabel(head, text="", font=font(12), text_color=TEXT2)
         self.count_label.pack(side="left", padx=8)
-        ctk.CTkButton(head, text="전체 비우기", width=80, height=28, fg_color="transparent", hover_color=BTN_HOVER,
-                      text_color=DANGER, font=font(12), command=self._clear_items).pack(side="right")
+        clear_btn = secondary_button(head, "전체 비우기", self._clear_items, width=80)  # 옆 버튼과 같은 배경, 글자만 빨강
+        clear_btn.configure(height=28, font=font(12), text_color=DANGER)
+        clear_btn.pack(side="right")
         # 파일 입출력: 프리셋 행과 헷갈리지 않도록 제목 줄에 둠 → [파일 불러오기] [파일 내보내기] [전체 비우기]
         for text, cmd in (("파일 내보내기", self._export_worship_file), ("파일 불러오기", self._import_worship_file)):
             b = secondary_button(head, text, cmd, width=96)
@@ -573,6 +585,9 @@ class App(ctk.CTk):
         self.scroll = ctk.CTkScrollableFrame(self.list_zone, fg_color="transparent", corner_radius=10)
         self.scroll.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         self.scroll.grid_columnconfigure(0, weight=1)
+        self._set_order_scroll_speed()
+        # 목록 너비가 바뀌면 긴 행의 줄 바꿈을 다시 정함 (창 크기 조절은 멈춘 뒤 한 번만 배치되므로 _fit_content 후 1회)
+        self.scroll._parent_canvas.bind("<Configure>", self._schedule_layout_rows, add="+")
 
         # 팔레트: [기도] [찬송] [말씀] [설교] [CCM] [사용자 지정] — 드래그&드롭
         # 버튼 폭 합계가 최소 창 폭의 순서 패널(약 570)을 넘지 않도록 할 것
@@ -600,6 +615,13 @@ class App(ctk.CTk):
         self.progress = ctk.CTkProgressBar(left, height=6, progress_color=ACCENT)
         self.progress.set(0)
         self.progress.pack(fill="x", pady=(4, 0))
+        # 상태 문구의 부연 설명(저장 방법·경고 수 등)은 진행 막대 아랫줄에 — 한 줄에 이어 쓰면 상태 칸을 넘어 잘렸음
+        self.status_detail = ctk.CTkLabel(left, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left",
+                                          height=18)
+        self.status_detail.pack(fill="x", pady=(2, 0))
+        # 칸보다 길면 잘리지 않고 다음 줄로 (하단 바 높이는 오른쪽 버튼 두 줄이 정하므로 두 줄까지는 바가 커지지 않음)
+        left.bind("<Configure>", lambda e: self.status_detail.configure(
+            wraplength=max(100, e.width / ctk.ScalingTracker.get_widget_scaling(self))), add="+")
         # [로그] 위 / [임시 파일](임시 실행으로 만든 PPT 다시 열기·저장) 아래
         secondary_button(bar, "로그", self._show_log, width=76, height=30).grid(
             row=0, column=1, padx=(0, 8), pady=(12, 2), sticky="s")
@@ -668,6 +690,7 @@ class App(ctk.CTk):
         for w in self.scroll.winfo_children():
             w.destroy()
         self.row_widgets = []
+        self._row_parts = []
         self.indicator = ctk.CTkFrame(self.scroll, height=4, fg_color=ACCENT, corner_radius=0, border_width=0)
 
         if not self.items:
@@ -676,35 +699,41 @@ class App(ctk.CTk):
         for idx, item in enumerate(self.items):
             self.row_widgets.append(self._make_row(idx, item))
         self.count_label.configure(text=f"{len(self.items)}개 항목")
+        if self.items:
+            self.scroll.update_idletasks()  # 알약 너비(reqwidth)를 알아야 줄 바꿈 여부를 정할 수 있음
+            self._layout_rows()
 
     def _make_row(self, idx: int, item: ServiceItem) -> tk.Frame:
         # Windows 에선 위젯(HWND) 수가 곧 창 크기 조절·목록 갱신 비용이라(CLAUDE.md §11) 둥근 알약 2개만 CTk 로 그리고
         # 나머지(행 틀·손잡이·연결선·▲▼✕)는 일반 tk 위젯으로 그린다. 색은 모드가 바뀌면 _on_appearance_change 가 다시 그림.
+        # grid: [손잡이][왼쪽 알약][연결선 ─ 늘어남][오른쪽 알약][▲▼✕] — 한 줄에 안 들어가면 _layout_rows 가 오른쪽 알약을
+        # 아랫줄로 내림.
         bg = mode_color(SUBTLE)
         row = tk.Frame(self.scroll, bg=bg)
         row.pack(fill="x", padx=scaled(self, 6), pady=scaled(self, 3))
+        row.grid_columnconfigure(2, weight=1)
 
         handle = tk.Label(row, text="⋮⋮", bg=bg, fg=mode_color(TEXT2), font=tk_font(self, 14, "bold"),
                           width=2, cursor="fleur")
-        handle.pack(side="left", padx=(scaled(self, 2), scaled(self, 6)))
+        handle.grid(row=0, column=0, padx=(scaled(self, 2), scaled(self, 6)))
         self.drag.attach(handle, ("move", idx), f"{item.label}  {item.display_value}".strip())
 
         left = ctk.CTkButton(row, text=item.label, width=140, height=36, corner_radius=10, fg_color=CARD, bg_color=SUBTLE,
                              hover_color=BTN_HOVER, border_width=2, border_color=KIND_COLORS[item.kind],
                              text_color=TEXT, font=font(13, "bold"), command=lambda i=idx: self._on_pill_click(i))
-        left.pack(side="left")
+        left.grid(row=0, column=1)
         line = tk.Frame(row, height=max(1, scaled(self, 1.5)), bg=mode_color(PILL_BORDER))
-        line.pack(side="left", fill="x", expand=True)
+        line.grid(row=0, column=2, sticky="ew")
         for w in (row, line):  # 알약 밖(행 빈 곳·연결선) 더블클릭도 원본 열기
             w.bind("<Double-Button-1>", lambda e, i=idx: self.after_idle(lambda: self._open_item(i)))
         right = ctk.CTkButton(row, text=item.display_value, width=170, height=36, corner_radius=10, fg_color=CARD,
                               bg_color=SUBTLE, hover_color=BTN_HOVER, border_width=1, border_color=PILL_BORDER,
                               text_color=TEXT if item.display_value != "—" else TEXT2, font=font(13),
                               command=lambda i=idx: self._on_pill_click(i))
-        right.pack(side="left")
+        right.grid(row=0, column=3)
 
         tools = tk.Frame(row, bg=bg)
-        tools.pack(side="left", padx=(scaled(self, 8), 0))
+        tools.grid(row=0, column=4, padx=(scaled(self, 8), 0))
         hover = mode_color(BTN_HOVER)
         for text, cmd, color in (("▲", lambda i=idx: self._move_item(i, -1), TEXT2),
                                  ("▼", lambda i=idx: self._move_item(i, 1), TEXT2),
@@ -716,7 +745,78 @@ class App(ctk.CTk):
             b.bind("<Leave>", lambda e, w=b: w.configure(bg=bg))
             # 클릭 즉시 목록을 다시 그리면 이벤트 처리 중인 위젯이 사라지므로 다음 루프에서 실행
             b.bind("<ButtonRelease-1>", lambda e, c=cmd: self.after_idle(c))
+        self._row_parts.append({"row": row, "handle": handle, "left": left, "right": right, "tools": tools,
+                                "texts": (item.label, item.display_value), "wrapped": False, "widths": None,
+                                "shown": (item.label, item.display_value)})
         return row
+
+    def _layout_rows(self, _event=None):
+        """오른쪽 알약까지 한 줄에 안 들어가는 행은 오른쪽 알약을 아랫줄(오른쪽 정렬)로 내린다.
+        아랫줄에도 안 들어갈 만큼 길면 글자를 '…' 로 줄인다 (전체 내용은 알약을 눌러 수정 창에서 확인).
+        목록을 그릴 때와 목록 너비가 바뀔 때(창 크기 조절이 끝난 뒤 한 번) 실행 — 다시 만들지 않고 grid 만 바꿈."""
+        canvas = getattr(self.scroll, "_parent_canvas", None)
+        avail = (canvas.winfo_width() if canvas is not None else self.scroll.winfo_width()) - 2 * scaled(self, 6)
+        if avail < scaled(self, 200):
+            return  # 아직 배치 전
+        min_line = scaled(self, 24)
+        for part in self._row_parts:
+            try:
+                if not part["row"].winfo_exists():
+                    continue
+            except tk.TclError:
+                continue
+            if part["widths"] is None:  # 처음 한 번: 전체 글자일 때의 너비
+                part["widths"] = (part["handle"].winfo_reqwidth() + scaled(self, 8), part["left"].winfo_reqwidth(),
+                                  part["right"].winfo_reqwidth(), part["tools"].winfo_reqwidth() + scaled(self, 8))
+            hw, lw, rw, tw = part["widths"]
+            wrapped = hw + lw + min_line + rw + tw > avail
+            left_max = avail - hw - min_line - tw
+            right_max = avail - hw - tw if wrapped else rw
+            shown = (self._fit_pill(part["texts"][0], lw, left_max, bold=True),
+                     self._fit_pill(part["texts"][1], rw, right_max))
+            if shown != part["shown"]:
+                part["left"].configure(text=shown[0])
+                part["right"].configure(text=shown[1])
+                part["shown"] = shown
+            if wrapped != part["wrapped"]:
+                part["wrapped"] = wrapped
+                if wrapped:
+                    # 아랫줄 오른쪽 끝을 다른 행의 오른쪽 알약과 맞춤 (▲▼✕ 열 앞까지)
+                    part["right"].grid(row=1, column=1, columnspan=3, sticky="e", pady=(scaled(self, 4), 0))
+                else:
+                    part["right"].grid(row=0, column=3, columnspan=1, sticky="", pady=0)
+
+    def _schedule_layout_rows(self, _event=None):
+        if self._layout_job is not None:
+            self.after_cancel(self._layout_job)
+        self._layout_job = self.after_idle(self._run_layout_rows)
+
+    def _run_layout_rows(self):
+        self._layout_job = None
+        self._layout_rows()
+
+    def _set_order_scroll_speed(self):
+        """휠 한 칸 = 행 하나쯤. CTk 는 Windows 에서 휠 한 칸(delta 120)을 20단위 × 1px 로 스크롤해 행 높이(약 48)의
+        절반도 안 움직였고, 배율이 크면 더 느렸다 → 단위를 배율에 맞춰 키움 (드래그 중 자동 스크롤도 같이 빨라짐)."""
+        canvas = getattr(self.scroll, "_parent_canvas", None)
+        if canvas is not None:
+            canvas.configure(yscrollincrement=max(1, scaled(self, ORDER_SCROLL_UNIT)))
+
+    def _fit_pill(self, text: str, full_width: int, max_width: int, bold: bool = False) -> str:
+        """알약 너비가 max_width 를 넘으면 글자 끝을 '…' 로 줄인 문구 (알약 여백은 전체 글자일 때 너비로 계산)."""
+        if full_width <= max_width or len(text) <= 1:
+            return text
+        f = tkfont.Font(font=tk_font(self, 13, "bold" if bold else "normal"))
+        margin = full_width - f.measure(text)
+        room = max_width - margin
+        lo, hi = 0, len(text)
+        while lo < hi:  # room 안에 들어가는 가장 긴 앞부분
+            mid = (lo + hi + 1) // 2
+            if f.measure(text[:mid].rstrip() + "…") <= room:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo].rstrip() + "…" if lo else text[:1] + "…"
 
     # ================================================================ 드래그 & 드롭
     def _in_zone(self, x: int, y: int) -> bool:
@@ -913,7 +1013,7 @@ class App(ctk.CTk):
         except OSError as e:
             messagebox.showerror("열 수 없습니다", f"파일을 열 수 없습니다.\n{path}\n\n{e}", parent=self)
             return False
-        self._set_status(f"PowerPoint 로 열었습니다: {path.name} — 수정 후 저장하면 다음 생성부터 반영됩니다.")
+        self._set_status(f"PowerPoint 로 열었습니다: {path.name}", "수정 후 저장하면 다음 생성부터 반영됩니다.")
         return True
 
     def _open_bible(self, item: ServiceItem):
@@ -1331,6 +1431,7 @@ class App(ctk.CTk):
         lb = self.file_listbox
         lb.configure(font=tk_font(self, FILE_FONT_SIZE))
         lb.pack_configure(padx=(scaled(self, 8), 0), pady=scaled(self, 6))
+        self._set_order_scroll_speed()
         self._render_list()
 
     def _set_mode(self, label: str):
@@ -1552,6 +1653,10 @@ class App(ctk.CTk):
         self._log(f"생성 시작: {out.stem} (임시 실행 — 저장하지 않음)" if temp else f"생성 시작: {out.name}")
         self._set_progress(0, "준비 중…")
         items = [ServiceItem.from_dict(i.to_dict()) for i in self.items]  # 작업 중 UI 변경과 분리
+        # 열기·쇼 여부도 시작할 때 정함: 병합에 쓴 PowerPoint 에서 결과를 바로 보여 주므로(끄고 다시 켜지 않음) 빠름
+        opens = temp or self.open_after.get()
+        req = BuildRequest(items, church, date, worship, fmt, temp=temp,
+                           open_mode=("show" if self.slideshow.get() else "open") if opens else "")
 
         def done(result, err):
             self.building = False
@@ -1563,31 +1668,39 @@ class App(ctk.CTk):
                                      parent=self)
                 return
             warns = [l for l in self.log_lines if "⚠" in l]
-            warn_text = f"  (경고 {len(warns)}건 — 로그 확인)" if warns else ""
+            warn_text = f"⚠ 경고 {len(warns)}건 — [로그]에서 확인" if warns else ""
             if temp:  # 임시 실행: 항상 바로 열기. 나중에 [임시 파일]에서 다시 열거나 저장
-                self._set_progress(1, f"임시 실행: {result.stem} — 저장하려면 [임시 파일]에서 다른 이름으로 저장" + warn_text)
-                self._open_result(result)
+                self._set_progress(1, f"임시 실행: {result.stem}", "  ·  ".join(
+                    x for x in ("저장하려면 [임시 파일]에서 다른 이름으로 저장", warn_text) if x))
+                if not req.opened:
+                    self._open_result(result, req.open_mode == "show")
                 return
-            self._set_progress(1, f"완료: {result.name}" + warn_text)
-            if self.open_after.get():
-                self._open_result(result)
+            self._set_progress(1, f"완료: {result.name}", warn_text)
+            if opens:
+                if not req.opened:  # 창 없는 병합 방식 등으로 바로 보여 주지 못했으면 파일로 연다
+                    self._open_result(result, req.open_mode == "show")
             elif messagebox.askyesno("생성 완료", f"생성되었습니다.\n{result}\n\n폴더를 열까요?", parent=self):
                 os.startfile(result.parent)
 
-        run_in_thread(lambda: builder.build(BuildRequest(items, church, date, worship, fmt, temp=temp)), done)
+        run_in_thread(lambda: builder.build(req), done)
 
     # ================================================================ 상태 / 로그
-    def _set_status(self, text: str):
+    def _set_status(self, text: str, detail: str = ""):
+        """text: 상태 한 줄, detail: 진행 막대 아랫줄의 부연 설명 (비우면 지움)."""
         self.status.configure(text=text)
+        self.status_detail.configure(text=detail)
 
-    def _set_progress(self, value: float, text: str):
+    def _set_progress(self, value: float, text: str, detail: str = ""):
         self.progress.set(max(0.0, min(1.0, value)))
-        self._set_status(text)
+        self._set_status(text, detail)
 
     def _log(self, msg: str):
         self.log_lines.append(f"[{dt.datetime.now():%H:%M:%S}] {msg}")
         if "⚠" in msg:
             self._set_status(msg.strip())
+
+    def _show_help(self):
+        HelpDialog(self).show()
 
     def _show_log(self):
         LogDialog(self, self.log_lines).show()
