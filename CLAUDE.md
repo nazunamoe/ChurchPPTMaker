@@ -39,7 +39,7 @@ ChurchPPTMaker/
 ├─ main.py             진입점 + 메인 윈도우(App), 패널 구성, 드래그&드롭, 프리셋/생성 이벤트
 ├─ ui_widgets.py       재사용 위젯: 공통 색/폰트, _Modal(창 내부 오버레이 다이얼로그), CalendarPopup, ItemDialog,
 │                      BiblePicker(역본 검색 창)/BibleField(입력칸+🔍),
-│                      SettingsDialog(한 쪽 세로 스크롤), HelpDialog, TempFilesDialog, LogDialog, DragController, 스레드→UI 큐(post_to_ui/run_in_thread)
+│                      SettingsDialog(한 쪽 세로 스크롤), SetupWizard(설정 마법사), BuildOverlay(생성 중 화면), HelpDialog, TempFilesDialog, LogDialog, DragController, 스레드→UI 큐(post_to_ui/run_in_thread)
 ├─ models.py           ServiceItem 데이터 모델 + 항목 종류(KIND_*) 정의, 입력 검증
 ├─ config_manager.py   config.json / presets.json 읽기·쓰기, 기본값 병합, 프리셋 규칙 검증
 ├─ bible_bridge.py     Bible2PPT CLI 래퍼 (구절 정규화/검증, 실행, --list-bibles)
@@ -58,7 +58,7 @@ ChurchPPTMaker/
 ## 4. UI 레이아웃 (최초 UI 초안 기준)
 초안의 단일 창 구조를 **우측 "순서" 패널**로 그대로 옮기고, 추가 요구사항(폴더/파일/성경 폼)을 좌측 패널로 확장했다.
 ```
-┌ 예배 순서 PPT 제작 프로그램 v1.0.0 [? 도움말] ── [라이트|다크|시스템] [⚙ 설정] ─ □ ✕┐
+┌ 예배 순서 PPT 제작 프로그램 v1.0.0 [? 도움말][설정 마법사] ─ [라이트|다크|시스템] [⚙ 설정] ─ □ ✕┐
 │ 교회 이름 [________]  날짜 [YYYY-MM-DD][📅][금일 지정]  예배 종류 [________]     │
 │ 출력 폴더 [____][📁][↗]  파일 이름 [{날짜}_{교회이름}_{예배종류}][항목 ▾][기본값]      │
 │                                    → 2026-10-11_사랑교회_주일오전예배.pptx          │
@@ -101,8 +101,21 @@ ChurchPPTMaker/
 - 다이얼로그(항목 입력/설정/로그)와 달력은 **별도 창이 아니라 메인 창 안의 오버레이**(Win11 ContentDialog 스타일). Enter=확인, Esc=취소.
 - 생성 중 화면(`ui_widgets.BuildOverlay`, `App._show_build_overlay`/`_hide_build_overlay`): 생성하는 동안 `_content` 1~3행
   (상단 입력·본문·하단 바)을 grid 로 겹쳐 덮고 진행 단계·막대·경과 시간 + "PowerPoint 를 사용하지 마세요" 경고(§9-2 활성 창 문제)를 보인다.
-  `_Modal` 과 달리 grab 을 걸지 않음 — 제목 줄(창 옮기기·최소화·닫기)은 생성 중에도 써야 하므로 덮기만 하고, [⚙ 설정]만 잠근다.
+  `_Modal` 과 달리 grab 을 걸지 않음 — 제목 줄(창 옮기기·최소화·닫기)은 생성 중에도 써야 하므로 덮기만 하고, [⚙ 설정]·
+  [설정 마법사]만 잠근다. 덮기만 하면 키보드 포커스가 덮인 입력칸에 남아 글자가 입력되므로 화면에 포커스를 가져온다.
   `_set_progress` 가 하단 진행 막대와 함께 갱신, `done` 에서 결과 창·에러 창보다 먼저 닫는다.
+- 설정 마법사(`ui_widgets.SetupWizard`, 제목 [? 도움말] 옆 [설정 마법사] → `App._open_setup_wizard`): 폴더(템플릿·기도·
+  찬송가·CCM) → 설교 템플릿 → 말씀(Bible2PPT.exe·역본1·2·성경 템플릿·줄 수) → 확인(요약, 빠진 것 ⚠) 4단계 `_Modal`.
+  [다음]마다 그 단계 검사(`_check_step` — 폴더는 `worship_builder.folder_conflict` + 바꾼 값을 넣은 설정 사본 `_probe_cfg` 로
+  `output_conflict`, 파일은 ⚙ 설정과 같은 규칙), **[마침]에서만 저장**. 폴더 칸에 처음 보인 값(절대 경로) 그대로면 원래 값
+  (기본 `templates` 같은 상대 경로)을 유지. 역본 목록 불러오기는 ⚙ 설정과 `_BibleListMixin` 공용.
+  단계 쪽은 한 칸에 모두 grid 해 두고 지금 쪽만 보임 — 칸 minsize = 가장 큰 쪽 + 바깥 여백(여백을 빼면 큰 쪽에서 다시 커짐).
+  본문은 CTkScrollableFrame — 높이 = min(내용, 창 높이×0.9 − 나머지)(`_fit_body`, 1366×768·125% 처럼 창이 약 530 이면
+  마법사(574)의 위가 잘렸음). '나머지'는 다이얼로그 − **안쪽 캔버스** 높이로 잴 것(바깥 틀 기준이면 테두리 여백 약 21 만큼 넘침).
+  PPT 개수는 `worship_builder.count_ppt_files`(0.3초 제한, 넘으면 None → "폴더가 너무 커서…") — 사용자 폴더를 찬송가
+  폴더로 고르면 하위까지 세느라 19초 멈췄음(실측). 경로 칸은 `path_text` 로 앞뒤 따옴표를 뗌(탐색기 [경로로 복사]) — ⚙ 설정도 같음.
+  처음 실행(`config.setup_done` False)이면 `_reveal` 뒤 자동으로 띄우고, 닫는 방법과 상관없이 `setup_done` True.
+  `ConfigManager` 는 설정 파일은 있는데 키가 없으면(마법사 이전 버전 사용자) True 로 둔다. 생성 중에는 버튼을 잠근다.
 - 좌측 폴더 줄(`App._folder_row`: 이름·경로·📁·↗): [폴더] 카드에 기도/찬송가/CCM, 템플릿 폴더는 그 파일을 보여 주는
   [템플릿 파일] 카드 맨 위(검색칸 위)에 둔다. 출력 폴더는 상단 둘째 줄의 파일 이름 형식 왼쪽에 둔다.
   상단 둘째 줄은 grid: 파일 이름 미리보기는 형식 입력칸 **아랫줄**(같은 열). 미리보기 길이가 교회 이름·예배 종류에 따라
@@ -246,7 +259,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
 ```json
 {
   "church_name": "", "worship_type": "주일오전예배", "filename_format": "{날짜}_{교회이름}_{예배종류}",
-  "appearance_mode": "System", "use_system_accent": true,
+  "appearance_mode": "System", "use_system_accent": true, "setup_done": false,
   "paths": {"template_dir": "templates", "hymn_dir": "hymns", "ccm_dir": "ccm", "prayer_dir": "prayers",
             "output_dir": "output"},
   "bible2ppt": {"exe_path": "", "bible": "", "bible2": "", "template": "", "lines": null, "timeout_sec": 180,
@@ -368,6 +381,13 @@ Bible2PPT.exe <성경 구절...> [옵션]
     작업 창 제목을 못 읽어도 결과 닫기는 계속, 도움말 목차에서 끝부분 절을 고르면 다음 절이 선택되던 문제.
   - 테스트 주의: 엔진은 끝날 때 자기 스레드의 COM 을 해제하므로, 같은 스레드에서 미리 얻은 PowerPoint 개체는 쓸 수 없게 되고
     남은 참조는 PowerPoint 종료를 막는다 → 앱처럼 엔진은 작업 스레드(또는 별도 프로세스)에서 돌려 시험할 것.
+
+- 2026-10-10: 생성 중 화면(진행·경과 시간·PowerPoint 사용 금지 안내), 설정 마법사(처음 실행 시 자동, 제목 줄 버튼).
+  - 검증: 임시 설정으로 마법사 흐름 21건 + 엣지 케이스 35건(큰 폴더·따옴표 경로·환경 변수·없는 드라이브·권한 없는 폴더·
+    임시 폴더·출력 폴더와 겹침·.exe 인 폴더·.pptm·역본2만·목록 불러오는 중 마침·닫힌 뒤 목록 도착·작은 창·생성 중 열기 차단,
+    생성 중 키 입력·생성 실패/성공·생성 중 닫기 취소). 실제 Bible2PPT 로 역본 불러오기와 실제 PowerPoint 생성은 이번에 안 함.
+  - 찾아서 고친 것: 큰 폴더 개수 세기 19초 멈춤, 작은 창에서 마법사 위 잘림, 생성 중 덮인 입력칸에 글자 입력됨,
+    단계마다 다이얼로그 너비가 바뀜, 출력 폴더와 겹칠 때 어디서 바꾸는지 안내 없음.
 
 ## 11. 구현 시 주의사항 (검증된 함정)
 - **CTkToplevel 사용 금지** → `ui_widgets._Modal`(창 내부 오버레이) 상속. CTkToplevel 은 생성 때마다 `bind_all("<Button-1>")`를 누적하고

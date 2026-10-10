@@ -22,16 +22,16 @@ import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, Bible2PPTError, match_bible, parse_references
 from config_manager import MAX_PRESETS, ConfigManager, clean_temp_keep, PresetManager, save_worship_to_text, load_worship_from_text
-from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
+from models import (BIBLE_KEYS, DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
                     KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, make_item, numbered_token, validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
-                        TEXT2, BibleField, BuildOverlay, CalendarPopup, DragController, HelpDialog, ItemDialog, LogDialog, SettingsDialog, TempFilesDialog,
-                        accent_button, apply_accent, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
+                        TEXT2, BibleField, BuildOverlay, CalendarPopup, DragController, HelpDialog, ItemDialog, LogDialog,
+                        SettingsDialog, SetupWizard, TempFilesDialog, accent_button, apply_accent, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
 from window_frame import CustomFrame
-from worship_builder import (PPT_EXTS, BuildError, BuildRequest, WorshipBuilder, find_template, list_ccm_files,
-                             list_ppt_files, list_temp_results, output_conflict, output_filename, prayer_template_names,
+from worship_builder import (PPT_EXTS, BuildError, BuildRequest, WorshipBuilder, find_template, folder_conflict,
+                             list_ccm_files, list_ppt_files, list_temp_results, output_conflict, output_filename, prayer_template_names,
                              prune_temp_results, sanitize_filename, saved_name_for_temp, sermon_template, temp_dir_conflict,
                              temp_result_dir, template_fill_slots, validate_filename_format)
 
@@ -307,6 +307,8 @@ class App(ctk.CTk):
             self.attributes("-alpha", 1.0)
         except tk.TclError:
             pass
+        if not self.cfg.get("setup_done"):  # 처음 실행: 창이 보인 뒤 설정 마법사
+            self.after(300, self._open_setup_wizard)
 
     # ================================================================ 상단
     def _build_header(self):
@@ -315,6 +317,8 @@ class App(ctk.CTk):
         title = ctk.CTkLabel(bar, text=APP_TITLE, font=font(20, "bold"), text_color=TEXT)
         title.pack(side="left", pady=(14, 0))
         secondary_button(bar, "?  도움말", self._show_help, width=84).pack(side="left", padx=(12, 0), pady=(14, 0))
+        self.wizard_btn = secondary_button(bar, "설정 마법사", self._open_setup_wizard, width=96)
+        self.wizard_btn.pack(side="left", padx=(8, 0), pady=(14, 0))
         # Windows 제목 표시줄 대신 쓰는 창 버튼 (window_frame.CustomFrame — 창 오른쪽 위 끝에 붙임)
         caption = self._caption_frame = ctk.CTkFrame(bar, fg_color="transparent")
         caption.pack(side="right", anchor="n")
@@ -1286,19 +1290,9 @@ class App(ctk.CTk):
         path = filedialog.askdirectory(parent=self, initialdir=self.path_vars[key].get(), mustexist=True)
         if not path:
             return
-        try:  # 임시 폴더 안을 고르면 임시 파일 정리 때 그 안의 PPT 가 지워질 수 있음
-            in_temp = Path(path).resolve().is_relative_to(temp_result_dir().resolve())
-        except OSError:
-            in_temp = False
-        if in_temp:
-            messagebox.showerror("폴더 지정", f"임시 파일 폴더 안은 지정할 수 없습니다 (오래된 PPT 가 자동으로 지워짐):\n{path}",
-                                 parent=self)
+        if (err := folder_conflict(self.cfg, key, path)) is not None:
+            messagebox.showerror("폴더 지정", err, parent=self)
             return
-        if key == "output_dir":
-            probe = Path(path) / "_.pptx"  # 이 폴더에 결과를 저장해도 원본을 덮어쓰지 않는지 미리 확인
-            if (err := output_conflict(self.cfg, probe)) is not None:
-                messagebox.showerror("출력 폴더", err, parent=self)
-                return
         self.cfg.set("paths", key, path)
         self.path_vars[key].set(str(self.cfg.resolve_path(key)))
         if key == "template_dir":
@@ -1536,19 +1530,40 @@ class App(ctk.CTk):
         ctk.set_appearance_mode(mode)
         self.cfg.set("appearance_mode", None, mode)
 
+    def _apply_bible_settings(self, old: dict[str, str]):
+        """설정 창·설정 마법사에서 Bible2PPT·기본 역본을 저장한 뒤 메인 성경 영역에 반영. old: 저장 전 기본 역본."""
+        self._set_bible_values(list(self.cfg.get("bible2ppt", "bible_list") or []))
+        # 기본 역본을 바꿨으면, 그 기본값을 그대로 쓰던(비었거나 예전 기본값인) 칸만 새 기본값으로
+        for field, k in zip((self.bible_field, self.bible2_field), BIBLE_KEYS):
+            new = self.cfg.get("bible2ppt", k) or ""
+            if new != old[k] and field.get().strip() in ("", old[k]):
+                field.set(new)
+        self._update_bible_status()
+        self._load_bible_list_if_needed()  # exe 를 바꿨는데 목록을 못 받았으면 다시 시도
+
+    def _old_bibles(self) -> dict[str, str]:
+        return {k: self.cfg.get("bible2ppt", k) or "" for k in BIBLE_KEYS}
+
+    def _open_setup_wizard(self):
+        if self.building:
+            return
+        old = self._old_bibles()
+        saved = SetupWizard(self, self.cfg).show()
+        if not self.cfg.get("setup_done"):  # 처음 실행: 닫기만 해도 다시 띄우지 않음 (제목 줄 버튼으로 언제든)
+            self.cfg.set("setup_done", None, True)
+        if not saved:
+            return
+        for key in self.path_vars:
+            self.path_vars[key].set(str(self.cfg.resolve_path(key)))
+        self._refresh_files()
+        self._apply_bible_settings(old)
+        self._set_status("설정 마법사의 내용을 저장했습니다.")
+
     def _open_settings(self):
-        keys = ("bible", "bible2")
-        old = {k: self.cfg.get("bible2ppt", k) or "" for k in keys}
+        old = self._old_bibles()
         old_accent = bool(self.cfg.get("use_system_accent"))
         if SettingsDialog(self, self.cfg).show():
-            self._set_bible_values(list(self.cfg.get("bible2ppt", "bible_list") or []))
-            # 기본 역본을 바꿨으면, 그 기본값을 그대로 쓰던(비었거나 예전 기본값인) 칸만 새 기본값으로
-            for field, k in zip((self.bible_field, self.bible2_field), keys):
-                new = self.cfg.get("bible2ppt", k) or ""
-                if new != old[k] and field.get().strip() in ("", old[k]):
-                    field.set(new)
-            self._update_bible_status()
-            self._load_bible_list_if_needed()  # exe 를 바꿨는데 설정 창에서 목록을 못 받았으면 다시 시도
+            self._apply_bible_settings(old)
             # 보관 개수를 줄였으면 바로 정리 (임시 폴더가 원본 폴더와 겹치면 정리하지 않음)
             removed = [] if temp_dir_conflict(self.cfg) else prune_temp_results(self.cfg.get("ppt", "temp_keep"))
             self._set_status("설정을 저장했습니다." + (f" 오래된 임시 파일 {len(removed)}개를 지웠습니다." if removed else ""),
@@ -1793,13 +1808,16 @@ class App(ctk.CTk):
         self._build_overlay = BuildOverlay(self._content, opens)
         self._build_overlay.grid(row=1, column=0, rowspan=3, sticky="nsew")
         self._build_overlay.lift()
-        self.settings_btn.configure(state="disabled")
+        self._build_overlay.focus_set()  # 덮인 입력칸(교회 이름 등)에 남은 키보드 포커스를 가져옴 — 그대로면 생성 중에도 글자가 입력됨
+        for b in (self.settings_btn, self.wizard_btn):
+            b.configure(state="disabled")
 
     def _hide_build_overlay(self):
         if self._build_overlay is not None:
             self._build_overlay.destroy()
             self._build_overlay = None
-        self.settings_btn.configure(state="normal")
+        for b in (self.settings_btn, self.wizard_btn):
+            b.configure(state="normal")
 
     # ================================================================ 상태 / 로그
     def _set_status(self, text: str, detail: str = ""):

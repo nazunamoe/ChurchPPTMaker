@@ -30,6 +30,7 @@ DEFAULT_CONFIG: dict = {
     "filename_format": DEFAULT_FILENAME_FORMAT,  # 결과 파일 이름 형식 (프리셋을 불러오면 프리셋의 형식으로 바뀜)
     "appearance_mode": "System",
     "use_system_accent": True,  # Windows 강조 색을 프로그램 강조 색으로 (다시 켤 때 적용)
+    "setup_done": False,  # 설정 마법사를 한 번 보였음 (처음 실행할 때만 자동으로 띄움)
     "paths": {
         "template_dir": "templates",
         "hymn_dir": "hymns",
@@ -151,6 +152,9 @@ class ConfigManager:
         self.path = path
         raw = _read_json(path) or {}
         self.data = _deep_merge(DEFAULT_CONFIG, raw)
+        # 설정 마법사 이전 버전을 쓰던 사람(설정 파일은 있는데 키가 없음)은 이미 설정했으므로 자동으로 띄우지 않음
+        if raw and "setup_done" not in raw:
+            self.data["setup_done"] = True
         # 1.0.3 초기 형식: 기도 폴더가 ⚙ 설정(item_templates.prayer_dir)에 있었음 → 왼쪽 [폴더](paths.prayer_dir)로 옮김
         old = (raw.get("item_templates") or {}).get("prayer_dir") if isinstance(raw.get("item_templates"), dict) else None
         if isinstance(old, str) and old.strip() and "prayer_dir" not in (raw.get("paths") or {}):

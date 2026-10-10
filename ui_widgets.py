@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import calendar
+import copy
 import datetime as dt
 import queue
 import re
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Any, Callable
@@ -18,7 +20,7 @@ from bible_bridge import Bible2PPT, bible_sources, filter_bibles, match_bible, s
 from models import (BIBLE_KEYS, CUSTOM_TEXT_KEYS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON,
                     MAX_FILL, ServiceItem, ccm_title, make_item, numbered_token, validate_item)
 from config_manager import TEMP_KEEP_MAX, clean_temp_keep
-from worship_builder import PPT_EXTS
+from worship_builder import PPT_EXTS, count_ppt_files, folder_conflict, output_conflict, temp_dir_conflict
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
 FONT_FAMILY = "Malgun Gothic"
@@ -820,8 +822,86 @@ class ItemDialog(_Modal):
         self.destroy()
 
 
+# ---------------------------------------------------------------- 파일 찾기·역본 목록 (설정 창·설정 마법사 공용)
+def path_text(entry) -> str:
+    """경로 입력칸의 값. 탐색기 [경로로 복사]는 "C:\…" 처럼 따옴표를 붙이므로 앞뒤 따옴표·공백을 뗀다."""
+    return entry.get().strip().strip('"').strip()
+
+
+class _BibleListMixin:
+    """Bible2PPT.exe 를 지정하면 --list-bibles 로 역본 목록을 불러와 기본 역본 칸(bible·bible2)의 🔍 목록을 채운다.
+    쓰는 쪽이 갖출 것: cfg, exe(입력칸), bible·bible2(BibleField), bible_hint(라벨), bible_values, _loaded_for,
+    _loading_for, _closing(_Modal), _bible_timeout()."""
+
+    def _browse(self, entry: ctk.CTkEntry, types) -> bool:
+        path = filedialog.askopenfilename(parent=self, filetypes=types + [("모든 파일", "*.*")])
+        if path:
+            entry.delete(0, "end")
+            entry.insert(0, path)
+        return bool(path)
+
+    def _browse_exe(self):
+        if self._browse(self.exe, [("Bible2PPT", "*.exe")]):
+            self._load_bibles_if_needed()
+
+    def _exe(self):
+        exe = self.cfg.resolve_file(path_text(self.exe))
+        return exe if exe and exe.is_file() else None
+
+    def _show_bible_hint(self, text: str | None = None, error: bool = False):
+        if text is None:
+            if self._exe() is None:
+                text = "Bible2PPT.exe 를 지정하면 사용할 수 있는 역본 목록을 불러옵니다."
+            elif self.bible_values:
+                text = f"역본 {len(self.bible_values)}종 — 🔍 로 검색해 고르거나 비워 두면 Bible2PPT 마지막 선택값을 사용합니다."
+            else:
+                text = "↻ 를 눌러 역본 목록을 불러오세요."
+        self.bible_hint.configure(text=text, text_color=DANGER if error else TEXT2)
+
+    def _load_bibles_if_needed(self):
+        exe = self._exe()
+        if exe is not None and exe != self._loaded_for and exe != self._loading_for:
+            self._load_bibles()
+        elif self._loading_for is None:
+            self._show_bible_hint()
+
+    def _load_bibles(self):
+        exe = self._exe()
+        if exe is None:
+            self._show_bible_hint("Bible2PPT.exe 경로를 먼저 지정해 주세요.", error=True)
+            return
+        if exe == self._loading_for:
+            return
+        self._loading_for = exe
+        timeout = self._bible_timeout()
+        self._show_bible_hint("역본 목록을 불러오는 중… (인터넷에서 받아오므로 잠시 걸릴 수 있습니다)")
+        run_in_thread(lambda: Bible2PPT(exe, timeout).list_bibles(), lambda res, err: self._on_bibles(exe, res, err))
+
+    def _on_bibles(self, exe, res, err):
+        if self._closing or not self.winfo_exists():
+            return
+        if exe != self._loading_for:  # 그사이 다른 경로를 불러오는 중
+            return
+        self._loading_for = None
+        if exe != self._exe():  # 그사이 경로가 바뀜 → 새 경로로 다시
+            self._load_bibles_if_needed()
+            return
+        if err:
+            first = str(err).strip().splitlines()[0] if str(err).strip() else type(err).__name__
+            self._show_bible_hint(f"⚠ 역본 목록을 불러오지 못했습니다: {first}", error=True)
+            return
+        self.bible_values = res
+        self._loaded_for = exe
+        for field in (self.bible, self.bible2):
+            field.set_values(res)
+            cur = field.get().strip()
+            if cur and (match := match_bible(cur, res)) and match != cur:  # 예전 형식(이름만 입력) → 목록 항목
+                field.set(match)
+        self._show_bible_hint()
+
+
 # ---------------------------------------------------------------- 설정 창
-class SettingsDialog(_Modal):
+class SettingsDialog(_BibleListMixin, _Modal):
     """설정 창. Bible2PPT.exe 를 지정하면 --list-bibles 로 역본 목록을 바로 불러와 기본 역본 목록을 채운다.
     저장 시 불러온 목록은 config.bible2ppt.bible_list 에 캐시된다.
     항목이 많아 한 화면에 다 보이지 않으므로 한 쪽에 모두 두고 세로로 스크롤한다(높이는 메인 창에 맞춤, _fit_body)."""
@@ -984,13 +1064,6 @@ class SettingsDialog(_Modal):
     def on_shown(self):
         self._load_bibles_if_needed()  # exe 는 지정돼 있는데 목록이 없으면 바로 불러옴
 
-    def _browse(self, entry: ctk.CTkEntry, types) -> bool:
-        path = filedialog.askopenfilename(parent=self, filetypes=types + [("모든 파일", "*.*")])
-        if path:
-            entry.delete(0, "end")
-            entry.insert(0, path)
-        return bool(path)
-
     def _update_default_labels(self):
         base = self.placeholder.get().strip()
         for n, lbl in enumerate(self._default_labels, 1):
@@ -1018,68 +1091,11 @@ class SettingsDialog(_Modal):
         except tk.TclError:
             pass
 
-    def _browse_exe(self):
-        if self._browse(self.exe, [("Bible2PPT", "*.exe")]):
-            self._load_bibles_if_needed()
-
-    # ---- 역본 목록 (Bible2PPT --list-bibles)
-    def _exe(self):
-        exe = self.cfg.resolve_file(self.exe.get().strip())
-        return exe if exe and exe.is_file() else None
-
-    def _show_bible_hint(self, text: str | None = None, error: bool = False):
-        if text is None:
-            if self._exe() is None:
-                text = "Bible2PPT.exe 를 지정하면 사용할 수 있는 역본 목록을 불러옵니다."
-            elif self.bible_values:
-                text = f"역본 {len(self.bible_values)}종 — 🔍 로 검색해 고르거나 비워 두면 Bible2PPT 마지막 선택값을 사용합니다."
-            else:
-                text = "↻ 를 눌러 역본 목록을 불러오세요."
-        self.bible_hint.configure(text=text, text_color=DANGER if error else TEXT2)
-
-    def _load_bibles_if_needed(self):
-        exe = self._exe()
-        if exe is not None and exe != self._loaded_for and exe != self._loading_for:
-            self._load_bibles()
-        elif self._loading_for is None:
-            self._show_bible_hint()
-
-    def _load_bibles(self):
-        exe = self._exe()
-        if exe is None:
-            self._show_bible_hint("Bible2PPT.exe 경로를 먼저 지정해 주세요.", error=True)
-            return
-        if exe == self._loading_for:
-            return
-        self._loading_for = exe
+    def _bible_timeout(self) -> int:
         try:
-            timeout = max(int(self.timeout.get().strip() or 180), 10)
+            return max(int(self.timeout.get().strip() or 180), 10)
         except ValueError:
-            timeout = 180
-        self._show_bible_hint("역본 목록을 불러오는 중… (인터넷에서 받아오므로 잠시 걸릴 수 있습니다)")
-        run_in_thread(lambda: Bible2PPT(exe, timeout).list_bibles(), lambda res, err: self._on_bibles(exe, res, err))
-
-    def _on_bibles(self, exe, res, err):
-        if self._closing or not self.winfo_exists():
-            return
-        if exe != self._loading_for:  # 그사이 다른 경로를 불러오는 중
-            return
-        self._loading_for = None
-        if exe != self._exe():  # 그사이 경로가 바뀜 → 새 경로로 다시
-            self._load_bibles_if_needed()
-            return
-        if err:
-            first = str(err).strip().splitlines()[0] if str(err).strip() else type(err).__name__
-            self._show_bible_hint(f"⚠ 역본 목록을 불러오지 못했습니다: {first}", error=True)
-            return
-        self.bible_values = res
-        self._loaded_for = exe
-        for field in (self.bible, self.bible2):
-            field.set_values(res)
-            cur = field.get().strip()
-            if cur and (match := match_bible(cur, res)) and match != cur:  # 예전 형식(이름만 입력) → 목록 항목
-                field.set(match)
-        self._show_bible_hint()
+            return 180
 
     def _save(self):
         try:
@@ -1090,12 +1106,12 @@ class SettingsDialog(_Modal):
             self._reveal(self.timeout)
             messagebox.showerror("입력 오류", "실행 제한 시간은 10 이상의 숫자로 입력해 주세요.", parent=self)
             return
-        exe_raw = self.exe.get().strip()
+        exe_raw = path_text(self.exe)
         if exe_raw and not exe_raw.lower().endswith(".exe"):
             self._reveal(self.exe)
             messagebox.showerror("입력 오류", "Bible2PPT 경로는 .exe 실행 파일이어야 합니다.", parent=self)
             return
-        tpl_raw = self.tpl.get().strip()
+        tpl_raw = path_text(self.tpl)
         if tpl_raw:
             tp = self.cfg.resolve_file(tpl_raw)
             if tp.suffix.lower() != ".pptx" or not tp.is_file():
@@ -1103,7 +1119,7 @@ class SettingsDialog(_Modal):
                 messagebox.showerror("입력 오류", "성경 템플릿은 존재하는 .pptx 파일이어야 합니다\n"
                                      f"(매크로가 들어갈 수 있는 .pptm 등은 사용할 수 없음):\n{tpl_raw}", parent=self)
                 return
-        sermon_raw = self.sermon_file.get().strip()
+        sermon_raw = path_text(self.sermon_file)
         if sermon_raw:
             sp = self.cfg.resolve_file(sermon_raw)
             if not sp.is_file() or sp.suffix.lower() not in PPT_EXTS:
@@ -1123,7 +1139,7 @@ class SettingsDialog(_Modal):
             return
         lines = self.lines.get()
         b = self.cfg.get("bible2ppt")
-        b.update(exe_path=self.exe.get().strip(), bible=bible1, bible2=bible2, template=tpl_raw,
+        b.update(exe_path=path_text(self.exe), bible=bible1, bible2=bible2, template=tpl_raw,
                  lines=None if lines == "프로그램 설정" else int(lines), timeout_sec=timeout,
                  # 현재 exe 로 불러온 목록만 캐시 (exe 가 바뀌었는데 아직 못 불러왔으면 비움 → 메인에서 다시 불러옴)
                  bible_list=self.bible_values if self._loaded_for is not None and self._loaded_for == self._exe() else [])
@@ -1136,6 +1152,354 @@ class SettingsDialog(_Modal):
         self.cfg.save()
         self.result = True
         self.destroy()
+
+
+# ---------------------------------------------------------------- 설정 마법사
+BIBLE2PPT_URL = "https://github.com/nazunamoe/Bible2PPT"
+WIZARD_FOLDERS = (  # (설정 키, 이름, 설명, 하위 폴더까지 찾는지)
+    ("template_dir", "템플릿 폴더", "예배로 부름·축도처럼 순서마다 쓰는 PPT (파일 이름 = 순서 이름)", False),
+    ("prayer_dir", "기도 폴더", "합심기도.pptx 처럼 기도 종류별 PPT", False),
+    ("hymn_dir", "찬송가 폴더", "파일 이름에 장 번호가 있는 찬송가 PPT (예: 029장.pptx, 하위 폴더 포함)", True),
+    ("ccm_dir", "CCM 폴더", "곡명이 파일 이름인 CCM PPT (하위 폴더 포함)", True),
+)
+LINES_DEFAULT = "프로그램 설정"  # 슬라이드당 줄 수를 Bible2PPT 에 맡김 (bible2ppt.lines = None)
+
+
+class SetupWizard(_BibleListMixin, _Modal):
+    """설정 마법사: 처음 쓰는 사람이 폴더(템플릿·기도·찬송가·CCM) → 설교 템플릿 → 말씀(Bible2PPT·역본·성경 템플릿·줄 수)
+    → 확인 순서로 지정한다. 처음 실행할 때 자동으로, 이후에는 제목 줄 [설정 마법사]로 띄운다.
+    단계마다 [다음]에서 그 단계 값을 검사하고, [마침]에서만 저장한다(중간에 닫으면 아무것도 바뀌지 않음).
+    값은 ⚙ 설정·왼쪽 폴더 줄과 같은 config 키를 쓰고, 검사 규칙도 같다(folder_conflict·output_conflict·temp_dir_conflict)."""
+    STEPS = ("폴더", "설교", "말씀", "확인")
+    FIELD_W = 400  # 입력칸 너비 (모든 단계 공통 — 단계를 넘겨도 다이얼로그 너비가 그대로)
+
+    def __init__(self, master, cfg):
+        super().__init__(master, "설정 마법사")
+        self.cfg = cfg
+        b = cfg.get("bible2ppt")
+        self.bible_values: list[str] = list(b.get("bible_list") or [])
+        self._loaded_for = cfg.resolve_file(b.get("exe_path", "")) if self.bible_values else None
+        self._loading_for = None
+        self.step = 0
+
+        bar = ctk.CTkFrame(self, fg_color="transparent")
+        bar.pack(fill="x", padx=20, pady=(6, 0))
+        self._step_labels: list[ctk.CTkLabel] = []
+        for i, name in enumerate(self.STEPS):
+            if i:
+                ctk.CTkLabel(bar, text="›", font=font(13), text_color=TEXT2).pack(side="left", padx=8)
+            lbl = ctk.CTkLabel(bar, text=f"{i + 1}. {name}", font=font(13))
+            lbl.pack(side="left")
+            self._step_labels.append(lbl)
+
+        # 단계 쪽은 모두 같은 칸에 두고 지금 쪽만 보인다. 칸 크기를 가장 큰 쪽에 맞춰 단계를 넘겨도 다이얼로그 크기가 그대로.
+        # 작은 화면에서는 창보다 커질 수 있어 스크롤 영역 (_fit_body)
+        self.body = ctk.CTkScrollableFrame(self, fg_color=CARD, corner_radius=10, border_width=1, border_color=BORDER)
+        self.body.pack(fill="both", expand=True, padx=16, pady=(10, 8))
+        self.body._parent_canvas.configure(yscrollincrement=max(1, scaled(self, 2.4)))  # 설정 창과 같은 휠 속도
+        self.pages = [self._build_folders(), self._build_sermon(), self._build_bible(), self._build_summary()]
+        for page in self.pages:
+            page.grid(row=0, column=0, sticky="nsew", padx=20, pady=(14, 16))
+        self.body.update_idletasks()
+        # 칸 최소 크기는 쪽 바깥 여백(padx·pady)까지 포함한 크기여야 함 (빠뜨리면 큰 쪽에서 칸이 다시 커짐)
+        self.body.grid_rowconfigure(0, minsize=max(p.winfo_reqheight() for p in self.pages) + scaled(self, 30))
+        self.body.grid_columnconfigure(0, minsize=max(p.winfo_reqwidth() for p in self.pages) + scaled(self, 40))
+
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.pack(fill="x", padx=16, pady=(4, 16))
+        secondary_button(btns, "나중에 하기", self.destroy, width=96).pack(side="left")
+        self.next_btn = accent_button(btns, "다음", self._next, width=96)
+        self.next_btn.pack(side="right")
+        self.prev_btn = secondary_button(btns, "이전", self._prev, width=96)
+        self.prev_btn.pack(side="right", padx=8)
+        self.bind_return(self._next)
+        self._show_step(0)
+        self._fit_body()
+
+    def _fit_body(self):
+        """스크롤 영역 크기: 너비는 가장 큰 쪽, 높이는 내용과 (창 높이 90% − 제목·단계·버튼) 중 작은 쪽.
+        다이얼로그는 창 45% 지점에 가운데 맞춤(_Modal.show)이라 이보다 크면 위가 잘린다 — 1366×768·125% 노트북이면
+        창 높이가 약 530 인데 마법사는 약 574 였음."""
+        s = ctk.ScalingTracker.get_widget_scaling(self)
+        self.update_idletasks()
+        req_w, req_h = self.body.winfo_reqwidth() / s, self.body.winfo_reqheight() / s
+        self.body.configure(width=int(req_w) + 4, height=int(req_h))
+        self.update_idletasks()
+        # height 로 지정되는 것은 안쪽 캔버스 — 바깥 틀의 테두리·둥근 모서리 여백(약 21)까지 '나머지'에 넣어야 맞음
+        extra = (self.winfo_reqheight() - self.body._parent_canvas.winfo_reqheight()) / s
+        avail = self._win.winfo_height() / s * 0.9 - extra
+        self.body.configure(height=int(max(160, min(req_h, avail))))
+
+    # ---- 단계 쪽 만들기
+    def _page(self) -> ctk.CTkFrame:
+        return ctk.CTkFrame(self.body, fg_color="transparent")
+
+    def _intro(self, page, text: str):
+        ctk.CTkLabel(page, text=text, font=font(13), text_color=TEXT, anchor="w", justify="left",
+                     wraplength=self.FIELD_W + 160).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+
+    def _note(self, page, r: int, text: str = "") -> ctk.CTkLabel:
+        lbl = ctk.CTkLabel(page, text=text, font=font(11), text_color=TEXT2, anchor="w", justify="left",
+                           wraplength=self.FIELD_W + 40)
+        lbl.grid(row=r, column=1, columnspan=2, sticky="w", pady=(0, 8))
+        return lbl
+
+    def _label(self, page, r: int, text: str):
+        ctk.CTkLabel(page, text=text, font=font(13, "bold"), text_color=TEXT, anchor="w", width=130).grid(
+            row=r, column=0, sticky="w", pady=(4, 2))
+
+    def _entry(self, page, value: str) -> ctk.CTkEntry:
+        e = ctk.CTkEntry(page, width=self.FIELD_W, font=font(13))
+        e.insert(0, value or "")
+        return e
+
+    def _build_folders(self):
+        page = self._page()
+        self._intro(page, "예배 PPT 를 만들 때 가져올 PPT 들이 있는 폴더를 지정합니다.\n"
+                          "아직 PPT 가 없다면 그대로 두고, 나중에 이 폴더에 넣어도 됩니다.")
+        self.folders: dict[str, tuple[ctk.CTkEntry, str, ctk.CTkLabel, bool]] = {}  # 키 → (입력칸, 처음 값, 안내, 하위 포함)
+        self._desc = {key: desc for key, _n, desc, _r in WIZARD_FOLDERS}
+        r = 1
+        for key, name, desc, recursive in WIZARD_FOLDERS:
+            shown = str(self.cfg.resolve_path(key))
+            self._label(page, r, name)
+            e = self._entry(page, shown)
+            e.grid(row=r, column=1, sticky="w", pady=(4, 2))
+            secondary_button(page, "📁", lambda k=key: self._choose_folder(k), width=36).grid(
+                row=r, column=2, padx=(6, 0), pady=(4, 2))
+            note = self._note(page, r + 1)
+            self.folders[key] = (e, shown, note, recursive)
+            e.bind("<FocusOut>", lambda _e, k=key: self._update_folder_note(k), add="+")
+            self._update_folder_note(key)
+            r += 2
+        return page
+
+    def _build_sermon(self):
+        page = self._page()
+        t = self.cfg.get("item_templates")
+        self._intro(page, "설교 순서에 쓸 PPT 템플릿 파일 하나를 지정합니다.\n"
+                          "템플릿 안의 {{내용1}} 자리에 설교 제목, {{내용2}} 자리에 설교자가 들어갑니다.")
+        self._label(page, 1, "설교 템플릿")
+        self.sermon_file = self._entry(page, t.get("sermon_file"))
+        self.sermon_file.grid(row=1, column=1, sticky="w", pady=(4, 2))
+        secondary_button(page, "찾기", lambda: self._browse(self.sermon_file, [("PowerPoint", "*.pptx *.pptm *.ppt")]),
+                         width=56).grid(row=1, column=2, padx=(6, 0), pady=(4, 2))
+        self._note(page, 2, "비워 두면 설교 순서를 추가할 수 없습니다. 나중에 ⚙ 설정에서 지정할 수 있습니다.")
+        return page
+
+    def _build_bible(self):
+        page = self._page()
+        b = self.cfg.get("bible2ppt")
+        self._intro(page, "말씀(성경 구절) PPT 는 Bible2PPT 프로그램이 만듭니다. 명령줄 실행(CLI)을 지원하는 버전이 필요합니다.\n"
+                          "Bible2PPT 를 지정하면 사용할 수 있는 성경 역본 목록을 불러옵니다.")
+        self._label(page, 1, "Bible2PPT.exe")
+        self.exe = self._entry(page, b.get("exe_path"))
+        self.exe.grid(row=1, column=1, sticky="w", pady=(4, 2))
+        self.exe.bind("<FocusOut>", lambda e: self._load_bibles_if_needed(), add="+")
+        secondary_button(page, "찾기", self._browse_exe, width=56).grid(row=1, column=2, padx=(6, 0), pady=(4, 2))
+        link = ctk.CTkFrame(page, fg_color="transparent")
+        link.grid(row=2, column=1, columnspan=2, sticky="w", pady=(0, 8))
+        ctk.CTkLabel(link, text="아직 없다면:", font=font(11), text_color=TEXT2).pack(side="left")
+        secondary_button(link, "Bible2PPT 받기 ↗", lambda: webbrowser.open(BIBLE2PPT_URL), width=120, height=26).pack(
+            side="left", padx=(8, 0))
+
+        self._label(page, 3, "기본 성경 역본")
+        self.bible = BibleField(page, values=self.bible_values, width=self.FIELD_W,
+                                placeholder="비우면 Bible2PPT 마지막 선택값", clear_text="지정 안 함")
+        self.bible.set(b.get("bible") or "")
+        self.bible.grid(row=3, column=1, sticky="w", pady=(4, 2))
+        secondary_button(page, "↻", self._load_bibles, width=36).grid(row=3, column=2, padx=(6, 0), pady=(4, 2))
+        self._label(page, 4, "두 번째 역본")
+        self.bible2 = BibleField(page, values=self.bible_values, width=self.FIELD_W,
+                                 placeholder="나란히 표시할 역본 (선택)", clear_text="지정 안 함")
+        self.bible2.set(b.get("bible2") or "")
+        self.bible2.grid(row=4, column=1, sticky="w", pady=(4, 2))
+        self.bible_hint = self._note(page, 5)
+        self._show_bible_hint()
+
+        self._label(page, 6, "성경 템플릿")
+        self.tpl = self._entry(page, b.get("template"))
+        self.tpl.grid(row=6, column=1, sticky="w", pady=(4, 2))
+        secondary_button(page, "찾기", lambda: self._browse(self.tpl, [("PowerPoint", "*.pptx")]), width=56).grid(
+            row=6, column=2, padx=(6, 0), pady=(4, 2))
+        self._note(page, 7, "선택 — 말씀 슬라이드 모양을 정하는 .pptx. 비우면 Bible2PPT 기본 템플릿을 씁니다.")
+        self._label(page, 8, "슬라이드당 줄 수")
+        self.lines = ctk.CTkComboBox(page, width=160, values=[LINES_DEFAULT] + [str(i) for i in range(10)],
+                                     state="readonly", font=font(13), dropdown_font=font(13))
+        self.lines.set(LINES_DEFAULT if b.get("lines") is None else str(b.get("lines")))
+        self.lines.grid(row=8, column=1, sticky="w", pady=(4, 2))
+        self._note(page, 9, "한 슬라이드에 넣을 구절 줄 수. 프로그램 설정 = Bible2PPT 에서 정한 값, 0 = 제한 없음.")
+        return page
+
+    def _build_summary(self):
+        page = self._page()
+        self._intro(page, "아래 내용으로 저장합니다. 고칠 것이 있으면 [이전]으로 돌아가세요.")
+        self.summary = ctk.CTkFrame(page, fg_color="transparent")
+        self.summary.grid(row=1, column=0, columnspan=3, sticky="nw")
+        ctk.CTkLabel(page, text="[마침]을 누르면 저장합니다. 도움말 옆 [설정 마법사]로 언제든 다시 할 수 있고,\n"
+                                "자세한 설정은 ⚙ 설정에서 바꿀 수 있습니다.",
+                     font=font(11), text_color=TEXT2, anchor="w", justify="left").grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        return page
+
+    def _fill_summary(self):
+        for w in self.summary.winfo_children():
+            w.destroy()
+        rows: list[tuple[bool, str, str]] = []
+        for key, name, _desc, _rec in WIZARD_FOLDERS:
+            n = self._ppt_count(key)
+            rows.append((bool(n), name, self._count_text(n) if n != 0 else "PPT 파일이 없습니다 — 나중에 넣어 주세요"))
+        sermon = path_text(self.sermon_file)
+        rows.append((bool(sermon), "설교 템플릿", Path(sermon).name if sermon else "지정 안 함 — 설교 순서를 추가할 수 없음"))
+        exe = path_text(self.exe)
+        rows.append((bool(exe), "Bible2PPT", Path(exe).name if exe else "지정 안 함 — 말씀 순서를 추가할 수 없음"))
+        bibles = [v for v in (self.bible.get().strip(), self.bible2.get().strip()) if v]
+        rows.append((True, "기본 역본", " + ".join(bibles) if bibles else "지정 안 함 (Bible2PPT 마지막 선택값)"))
+        tpl = path_text(self.tpl)
+        rows.append((True, "성경 템플릿", Path(tpl).name if tpl else "Bible2PPT 기본"))
+        rows.append((True, "슬라이드당 줄 수", self.lines.get()))
+        for r, (ok, name, detail) in enumerate(rows):
+            ctk.CTkLabel(self.summary, text="✔" if ok else "⚠", font=font(13, "bold"),
+                         text_color=KIND_COLORS[KIND_PRAYER] if ok else WARN_ICON, width=22).grid(row=r, column=0, pady=3)
+            ctk.CTkLabel(self.summary, text=name, font=font(13, "bold"), text_color=TEXT, anchor="w", width=130).grid(
+                row=r, column=1, sticky="w", padx=(6, 0), pady=3)
+            ctk.CTkLabel(self.summary, text=detail, font=font(13), text_color=TEXT if ok else TEXT2, anchor="w",
+                         wraplength=self.FIELD_W).grid(row=r, column=2, sticky="w", pady=3)
+
+    # ---- 폴더
+    def _folder_path(self, key: str) -> Path | None:
+        raw = path_text(self.folders[key][0])
+        return self.cfg.resolve_file(raw) if raw else None
+
+    def _ppt_count(self, key: str) -> int | None:
+        """PPT 개수, 폴더가 너무 커서 세다가 그만두면 None (화면이 멈추지 않게 count_ppt_files 의 시간 제한)."""
+        p = self._folder_path(key)
+        return count_ppt_files(p, recursive=self.folders[key][3]) if p else 0
+
+    @staticmethod
+    def _count_text(n: int | None) -> str:
+        if n is None:
+            return "폴더가 너무 커서 개수를 세지 않았습니다 — PPT 만 모아 둔 폴더를 지정하면 찾기가 빨라집니다"
+        return f"PPT {n}개" if n else "아직 PPT 가 없습니다"
+
+    def _update_folder_note(self, key: str):
+        desc, note = self._desc[key], self.folders[key][2]
+        p = self._folder_path(key)
+        if p is None or not p.is_dir():
+            note.configure(text=f"{desc}\n⚠ 폴더를 찾을 수 없습니다", text_color=DANGER)
+            return
+        n = self._ppt_count(key)
+        note.configure(text=f"{desc}\n{self._count_text(n)}", text_color=TEXT2 if n is not None else WARN_ICON)
+
+    def _choose_folder(self, key: str):
+        e = self.folders[key][0]
+        p = self._folder_path(key)
+        path = filedialog.askdirectory(parent=self, initialdir=str(p) if p and p.is_dir() else None, mustexist=True)
+        if path:
+            e.delete(0, "end")
+            e.insert(0, str(Path(path)))
+            self._update_folder_note(key)
+
+    # ---- 단계 이동
+    def _show_step(self, i: int):
+        self.step = i
+        for j, page in enumerate(self.pages):
+            if j == i:
+                page.grid()
+            else:
+                page.grid_remove()
+        for j, lbl in enumerate(self._step_labels):
+            lbl.configure(text_color=ACCENT if j == i else (TEXT if j < i else TEXT2),
+                          font=font(13, "bold") if j == i else font(13))
+        self.prev_btn.configure(state="normal" if i else "disabled")
+        self.next_btn.configure(text="마침" if i == len(self.pages) - 1 else "다음")
+        if i == len(self.pages) - 1:
+            self._fill_summary()
+
+    def _prev(self):
+        if self.step:
+            self._show_step(self.step - 1)
+
+    def _next(self):
+        if (problem := self._check_step(self.step)) is not None:
+            widget, msg = problem
+            if widget is not None:
+                widget.focus_set()
+            messagebox.showerror("입력 확인", msg, parent=self)
+            return
+        if self.step < len(self.pages) - 1:
+            self._show_step(self.step + 1)
+        else:
+            self._apply(self.cfg)
+            self.cfg.save()
+            self.result = True
+            self.destroy()
+
+    def _check_step(self, i: int):
+        """(문제 칸, 메시지) 또는 None."""
+        if i == 0:
+            for key, name, _desc, _rec in WIZARD_FOLDERS:
+                e = self.folders[key][0]
+                p = self._folder_path(key)
+                if p is None:
+                    return e, f"{name}를 지정해 주세요."
+                if not p.is_dir():
+                    return e, f"{name}를 찾을 수 없습니다:\n{p}"
+                if (err := folder_conflict(self.cfg, key, p)) is not None:
+                    return e, err
+            probe = self._probe_cfg()  # 바꾼 폴더가 출력 폴더와 겹쳐 결과가 원본을 덮어쓰지 않는지
+            if (err := output_conflict(probe, probe.resolve_path("output_dir") / "_.pptx")) is not None:
+                return None, err + "\n(출력 폴더는 메인 화면 상단 '출력 폴더' 줄에서 바꿀 수 있습니다.)"
+        elif i == 1:
+            raw = path_text(self.sermon_file)
+            if raw:
+                p = self.cfg.resolve_file(raw)
+                if not p.is_file() or p.suffix.lower() not in PPT_EXTS:
+                    return self.sermon_file, f"설교 템플릿 PPT 파일을 찾을 수 없습니다:\n{raw}"
+        elif i == 2:
+            raw = path_text(self.exe)
+            if raw and (not raw.lower().endswith(".exe") or self._exe() is None):
+                return self.exe, f"Bible2PPT 실행 파일(.exe)을 찾을 수 없습니다:\n{raw}"
+            raw = path_text(self.tpl)
+            if raw:
+                p = self.cfg.resolve_file(raw)
+                if p.suffix.lower() != ".pptx" or not p.is_file():
+                    return self.tpl, ("성경 템플릿은 존재하는 .pptx 파일이어야 합니다\n"
+                                      f"(매크로가 들어갈 수 있는 .pptm 등은 사용할 수 없음):\n{raw}")
+            if self.bible2.get().strip() and not self.bible.get().strip():
+                return self.bible.entry, "두 번째 역본을 쓰려면 기본 성경 역본도 지정해 주세요."
+        else:
+            if (err := temp_dir_conflict(self._probe_cfg())) is not None:
+                return None, err
+        return None
+
+    # ---- 저장
+    def _probe_cfg(self):
+        """지금 입력한 값을 넣은 설정 사본 (검사용 — 파일에 저장하지 않음)."""
+        probe = copy.copy(self.cfg)
+        probe.data = copy.deepcopy(self.cfg.data)
+        self._apply(probe)
+        return probe
+
+    def _apply(self, cfg) -> None:
+        paths = cfg.data["paths"]
+        for key, (e, shown, _note, _rec) in self.folders.items():
+            raw = path_text(e)
+            if raw != shown:  # 그대로면 원래 값 유지 (기본값 'templates' 같은 상대 경로는 exe 를 옮겨도 따라가도록)
+                paths[key] = raw
+        cfg.data["item_templates"]["sermon_file"] = path_text(self.sermon_file)
+        lines = self.lines.get()
+        cfg.data["bible2ppt"].update(
+            exe_path=path_text(self.exe), bible=self.bible.get().strip(), bible2=self.bible2.get().strip(),
+            template=path_text(self.tpl), lines=None if lines == LINES_DEFAULT else int(lines),
+            # 설정 창과 같은 규칙: 지금 exe 로 불러온 목록만 캐시 (못 불러왔으면 비움 → 메인에서 다시 불러옴)
+            bible_list=self.bible_values if self._loaded_for is not None and self._loaded_for == self._exe() else [])
+
+    def _bible_timeout(self) -> int:
+        return max(int(self.cfg.get("bible2ppt", "timeout_sec") or 180), 10)
+
+    def on_shown(self):
+        self._load_bibles_if_needed()
 
 
 # ---------------------------------------------------------------- 로그

@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -189,6 +190,30 @@ def list_ppt_files(folder: Path, recursive: bool = False) -> list[Path]:
                    and not p.name.startswith("~$")), key=lambda p: p.name)
 
 
+def count_ppt_files(folder: Path, recursive: bool = False, budget: float = 0.3) -> int | None:
+    """폴더의 PPT 개수 (list_ppt_files 와 같은 기준). budget 초 안에 다 못 세면 None.
+    설정 마법사가 개수를 보여 줄 때 사용 — 사용자 폴더처럼 큰 폴더를 하위까지 세면 화면이 수십 초 멈췄음(실측 19초)."""
+    deadline = time.monotonic() + budget
+    n, stack = 0, [folder]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as it:
+                for e in it:
+                    if time.monotonic() > deadline:
+                        return None
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            if recursive:
+                                stack.append(e.path)
+                        elif e.name.lower().endswith(PPT_EXTS) and not e.name.startswith("~$") and e.is_file():
+                            n += 1
+                    except OSError:
+                        continue
+        except OSError:  # 권한 없는 하위 폴더 등은 건너뜀
+            continue
+    return n
+
+
 def _norm(s: str) -> str:
     return re.sub(r"\s+", "", s).lower()
 
@@ -305,6 +330,20 @@ def output_conflict(cfg: ConfigManager, output: Path, sources=()) -> str | None:
         if out.parent.is_relative_to(folder):
             return (f"출력 폴더가 {name} 폴더와 같거나 그 안에 있어 원본 PPT 를 덮어쓸 수 있습니다:\n{out.parent}\n"
                     "출력 폴더를 다른 곳으로 지정해 주세요.")
+    return None
+
+
+def folder_conflict(cfg: ConfigManager, key: str, path: str | Path) -> str | None:
+    """폴더 지정(📁·설정 마법사) 때 쓸 수 없는 폴더면 오류 메시지. 임시 폴더 안은 임시 파일 정리 때 그 안의 PPT 가
+    지워질 수 있어 거부하고, 출력 폴더는 원본 폴더와 겹쳐 원본을 덮어쓰지 않는지 미리 확인한다 (cfg 의 다른 폴더 기준)."""
+    try:
+        in_temp = Path(path).resolve().is_relative_to(temp_result_dir().resolve())
+    except OSError:
+        in_temp = False
+    if in_temp:
+        return f"임시 파일 폴더 안은 지정할 수 없습니다 (오래된 PPT 가 자동으로 지워짐):\n{path}"
+    if key == "output_dir":
+        return output_conflict(cfg, Path(path) / "_.pptx")
     return None
 
 
