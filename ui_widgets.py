@@ -277,6 +277,9 @@ class BuildOverlay(ctk.CTkFrame):
                                 f"붙을 수 있습니다.\n{after}",
                      font=font(12), text_color=TEXT, anchor="w", justify="left", wraplength=380).pack(fill="x", pady=(4, 0))
 
+        # 덮인 위젯으로 Tab 이동 금지 (Tk 는 가려진 위젯도 '보이는' 것으로 보고 포커스를 옮겨, 생성 중에 입력칸에 글자가 들어감)
+        for seq in ("<Tab>", "<Shift-Tab>"):
+            self.bind(seq, lambda e: "break")
         self._start = dt.datetime.now()
         self._tick_job = None
         self._tick()
@@ -1415,19 +1418,28 @@ class SetupWizard(_BibleListMixin, _Modal):
         self.next_btn.configure(text="마침" if i == len(self.pages) - 1 else "다음")
         if i == len(self.pages) - 1:
             self._fill_summary()
+        # 숨긴 쪽의 입력칸에 포커스가 남으면 보이지 않는 칸에 계속 입력됨(검사를 마친 값이 몰래 바뀜) → 다이얼로그로 옮김.
+        # Tab 이동은 보이지 않는 위젯을 건너뛰므로 여기서부터는 지금 쪽 안에서만 움직인다.
+        self.focus_set()
 
     def _prev(self):
         if self.step:
             self._show_step(self.step - 1)
 
     def _next(self):
-        if (problem := self._check_step(self.step)) is not None:
-            widget, msg = problem
-            if widget is not None:
-                widget.focus_set()
-            messagebox.showerror("입력 확인", msg, parent=self)
-            return
-        if self.step < len(self.pages) - 1:
+        last = self.step == len(self.pages) - 1
+        # [마침]에서는 모든 단계를 다시 검사 — 앞 단계 값은 [다음] 때 검사했지만 그 뒤에 바뀌었을 수 있으므로
+        # 저장하는 값은 반드시 지금 검사한 값이어야 한다 (실측: 숨긴 칸에 남은 포커스로 .bat 경로가 검사 없이 저장됐었음).
+        for i in (range(len(self.pages)) if last else (self.step,)):
+            if (problem := self._check_step(i)) is not None:
+                widget, msg = problem
+                if i != self.step:
+                    self._show_step(i)
+                if widget is not None:
+                    widget.focus_set()
+                messagebox.showerror("입력 확인", msg, parent=self)
+                return
+        if not last:
             self._show_step(self.step + 1)
         else:
             self._apply(self.cfg)
