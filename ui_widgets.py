@@ -237,6 +237,64 @@ class _Modal(ctk.CTkFrame):
                 pass
 
 
+WARN_BG = ("#FFF4CE", "#433519")  # Win11 InfoBar '경고' 배경
+WARN_ICON = ("#9D5D00", "#FCE100")
+
+
+class BuildOverlay(ctk.CTkFrame):
+    """생성(병합) 중 화면. 제목 줄 아래 전체를 덮어 순서·설정을 못 바꾸게 하고, PowerPoint 를 쓰지 말라고 알린다.
+    [원본 서식 유지] 붙여넣기(ExecuteMso)는 PowerPoint 의 '활성 창'에 붙여넣으므로, 그사이 사용자가 PowerPoint 에서
+    다른 파일을 열거나 누르면 슬라이드가 그 파일에 붙을 수 있다 (프로그램 밖 조작은 막을 수 없어 안내만).
+    _Modal 과 달리 grab 을 걸지 않는다 — 제목 줄(창 옮기기·최소화·닫기)은 생성 중에도 쓸 수 있어야 하므로 덮기만 함.
+    사용: App 이 _content 의 1~3행에 grid 로 겹쳐 놓고 set_progress 로 갱신, 끝나면 destroy."""
+
+    def __init__(self, master, opens: bool):
+        super().__init__(master, fg_color=BG, corner_radius=0)
+        box = card(self)
+        box.place(relx=0.5, rely=0.42, anchor="center")
+        ctk.CTkLabel(box, text="예배 PPT 를 만드는 중입니다", font=font(18, "bold"), text_color=TEXT, anchor="w").pack(
+            fill="x", padx=28, pady=(24, 0))
+        self._step = ctk.CTkLabel(box, text="준비 중…", font=font(13), text_color=TEXT2, anchor="w")
+        self._step.pack(fill="x", padx=28, pady=(10, 0))
+        self._bar = ctk.CTkProgressBar(box, width=460, height=8, progress_color=ACCENT)
+        self._bar.set(0)
+        self._bar.pack(fill="x", padx=28, pady=(8, 0))
+        self._time = ctk.CTkLabel(box, text="", font=font(12), text_color=TEXT2, anchor="e")
+        self._time.pack(fill="x", padx=28, pady=(4, 0))
+
+        warn = ctk.CTkFrame(box, fg_color=WARN_BG, corner_radius=8)
+        warn.pack(fill="x", padx=28, pady=(12, 26))
+        ctk.CTkLabel(warn, text="⚠", font=font(22, "bold"), text_color=WARN_ICON).pack(
+            side="left", anchor="n", padx=(14, 10), pady=10)
+        body = ctk.CTkFrame(warn, fg_color="transparent")
+        body.pack(side="left", fill="x", expand=True, padx=(0, 14), pady=12)
+        ctk.CTkLabel(body, text="다 만들 때까지 PowerPoint 를 사용하지 마세요", font=font(14, "bold"), text_color=TEXT,
+                     anchor="w").pack(fill="x")
+        after = "PowerPoint 창은 다 만든 뒤 자동으로 열립니다." if opens else "다 만들면 이 화면이 닫히고 알려 드립니다."
+        ctk.CTkLabel(body, text="만드는 동안 PowerPoint 에서 다른 파일을 열거나 누르면 슬라이드가 그 파일에 "
+                                f"붙을 수 있습니다.\n{after}",
+                     font=font(12), text_color=TEXT, anchor="w", justify="left", wraplength=380).pack(fill="x", pady=(4, 0))
+
+        self._start = dt.datetime.now()
+        self._tick_job = None
+        self._tick()
+
+    def _tick(self):
+        sec = int((dt.datetime.now() - self._start).total_seconds())
+        self._time.configure(text=f"경과 {sec // 60}:{sec % 60:02d}")
+        self._tick_job = self.after(1000, self._tick)
+
+    def set_progress(self, value: float, text: str) -> None:
+        self._bar.set(max(0.0, min(1.0, value)))
+        self._step.configure(text=text)
+
+    def destroy(self):
+        if self._tick_job is not None:
+            self.after_cancel(self._tick_job)
+            self._tick_job = None
+        super().destroy()
+
+
 def _unbind(widget: tk.Misc, seq: str, funcid: str) -> None:
     """seq 에 묶인 여러 콜백 중 funcid 하나만 해제.
     (Python 3.12 이하의 Misc.unbind(seq, funcid) 는 seq 의 바인딩을 전부 지워 아래 다이얼로그의 Esc/Enter 까지 사라짐)"""

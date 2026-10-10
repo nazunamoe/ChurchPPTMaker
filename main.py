@@ -25,7 +25,7 @@ from config_manager import MAX_PRESETS, ConfigManager, clean_temp_keep, PresetMa
 from models import (DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
                     KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, make_item, numbered_token, validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
-                        TEXT2, BibleField, CalendarPopup, DragController, HelpDialog, ItemDialog, LogDialog, SettingsDialog, TempFilesDialog,
+                        TEXT2, BibleField, BuildOverlay, CalendarPopup, DragController, HelpDialog, ItemDialog, LogDialog, SettingsDialog, TempFilesDialog,
                         accent_button, apply_accent, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
@@ -179,6 +179,7 @@ class App(ctk.CTk):
         self._bible_loading = False
         self.log_lines: list[str] = []
         self.building = False
+        self._build_overlay: BuildOverlay | None = None  # 생성 중 화면 (제목 줄 아래를 덮음)
         self._save_job = None
         self._calendar: CalendarPopup | None = None
         self._pending_click: tuple[int, str] | None = None  # 순서 알약 한 번 클릭 → (행, 수정 창 예약 after id)
@@ -326,7 +327,8 @@ class App(ctk.CTk):
             b.pack(side="left")
             if cmd == self._toggle_maximize:
                 self.max_btn = b
-        secondary_button(bar, "⚙  설정", self._open_settings, width=88).pack(side="right", padx=(0, 12), pady=(14, 0))
+        self.settings_btn = secondary_button(bar, "⚙  설정", self._open_settings, width=88)
+        self.settings_btn.pack(side="right", padx=(0, 12), pady=(14, 0))
         current = {v: k for k, v in MODES.items()}.get(self.cfg.get("appearance_mode"), "시스템")
         self.mode_seg = ctk.CTkSegmentedButton(bar, values=list(MODES), command=self._set_mode, font=font(12),
                                                selected_color=ACCENT, height=32)
@@ -1755,9 +1757,11 @@ class App(ctk.CTk):
         opens = temp or self.open_after.get()
         req = BuildRequest(items, church, date, worship, fmt, temp=temp,
                            open_mode=("show" if self.slideshow.get() else "open") if opens else "")
+        self._show_build_overlay(opens)
 
         def done(result, err):
             self.building = False
+            self._hide_build_overlay()
             self.build_btn.configure(state="normal", text=self._build_label())
             if err:
                 self._set_progress(0, "생성 실패")
@@ -1782,6 +1786,21 @@ class App(ctk.CTk):
 
         run_in_thread(lambda: builder.build(req), done)
 
+    def _show_build_overlay(self, opens: bool):
+        """생성 중 화면: 제목 줄 아래(상단 입력·본문·하단 바 = _content 1~3행)를 덮는다. 제목 줄은 덮지 않아 창 옮기기·
+        최소화·닫기는 그대로 되고, 설정은 생성에 쓰는 값을 바꾸지 않도록 잠근다."""
+        self._hide_build_overlay()
+        self._build_overlay = BuildOverlay(self._content, opens)
+        self._build_overlay.grid(row=1, column=0, rowspan=3, sticky="nsew")
+        self._build_overlay.lift()
+        self.settings_btn.configure(state="disabled")
+
+    def _hide_build_overlay(self):
+        if self._build_overlay is not None:
+            self._build_overlay.destroy()
+            self._build_overlay = None
+        self.settings_btn.configure(state="normal")
+
     # ================================================================ 상태 / 로그
     def _set_status(self, text: str, detail: str = ""):
         """text: 상태 한 줄, detail: 진행 막대 아랫줄의 부연 설명 (비우면 지움)."""
@@ -1791,6 +1810,8 @@ class App(ctk.CTk):
     def _set_progress(self, value: float, text: str, detail: str = ""):
         self.progress.set(max(0.0, min(1.0, value)))
         self._set_status(text, detail)
+        if self._build_overlay is not None:
+            self._build_overlay.set_progress(value, text)
 
     def _log(self, msg: str):
         self.log_lines.append(f"[{dt.datetime.now():%H:%M:%S}] {msg}")
