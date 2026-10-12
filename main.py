@@ -31,6 +31,7 @@ from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
 from window_frame import CustomFrame
+from ppt_engine import kill_powerpoint, powerpoint_pids, show_powerpoint_dialogs
 from worship_builder import (PPT_EXTS, BuildError, _has_reparse_point, BuildRequest, WorshipBuilder, find_template, folder_conflict,
                              list_ccm_files, list_ppt_files, list_temp_results, output_conflict, output_filename, prayer_template_names,
                              prune_temp_results, sanitize_filename, saved_name_for_temp, sermon_template, temp_dir_conflict,
@@ -182,6 +183,8 @@ class App(ctk.CTk):
         self.log_lines: list[str] = []
         self.building = False
         self._build_overlay: BuildOverlay | None = None  # 생성 중 화면 (제목 줄 아래를 덮음)
+        self._build_cancelled = False  # [생성 중단]으로 PowerPoint 를 끈 생성 (실패 창 대신 '중단함')
+        self._ppt_before: set[int] = set()  # 생성 시작 때 이미 켜져 있던 PowerPoint (강제 종료하지 않음)
         self._save_job = None
         self._calendar: CalendarPopup | None = None
         self._pending_click: tuple[int, str] | None = None  # 순서 알약 한 번 클릭 → (행, 수정 창 예약 after id)
@@ -1793,6 +1796,9 @@ class App(ctk.CTk):
                 return
 
         self.building = True
+        self._build_cancelled = False
+        # 생성 전부터 켜져 있던 PowerPoint(사용자 것)는 멈춰도 강제로 끄지 않는다 — 그 뒤에 켜진 것만 [생성 중단] 대상
+        self._ppt_before = powerpoint_pids()
         self.build_btn.configure(state="disabled", text="생성 중…")
         self.log_lines.clear()
         self._log(f"생성 시작: {out.stem} (임시 실행 — 저장하지 않음)" if temp else f"생성 시작: {out.name}")
@@ -1808,6 +1814,10 @@ class App(ctk.CTk):
             self.building = False
             self._hide_build_overlay()
             self.build_btn.configure(state="normal", text=self._build_label())
+            if err and self._build_cancelled:
+                self._set_progress(0, "생성을 중단했습니다")
+                self._log(f"생성 중단 (PowerPoint 강제 종료): {err}")
+                return
             if err:
                 self._set_progress(0, "생성 실패")
                 self._log(f"오류: {err}")
@@ -1835,7 +1845,8 @@ class App(ctk.CTk):
         """생성 중 화면: 제목 줄 아래(상단 입력·본문·하단 바 = _content 1~3행)를 덮는다. 제목 줄은 덮지 않아 창 옮기기·
         최소화·닫기는 그대로 되고, 설정은 생성에 쓰는 값을 바꾸지 않도록 잠근다."""
         self._hide_build_overlay()
-        self._build_overlay = BuildOverlay(self._content, opens)
+        self._build_overlay = BuildOverlay(self._content, opens, on_show_ppt=self._show_ppt_dialogs,
+                                           on_cancel=self._cancel_build)
         self._build_overlay.grid(row=1, column=0, rowspan=3, sticky="nsew")
         self._build_overlay.lift()
         self._build_overlay.focus_set()  # 덮인 입력칸(교회 이름 등)에 남은 키보드 포커스를 가져옴 — 그대로면 생성 중에도 글자가 입력됨
@@ -1859,7 +1870,44 @@ class App(ctk.CTk):
         self.progress.set(max(0.0, min(1.0, value)))
         self._set_status(text, detail)
         if self._build_overlay is not None:
-            self._build_overlay.set_progress(value, text)
+            # 말씀 단계는 Bible2PPT 가 인터넷에서 성경을 받는 동안 진행 표시가 없으므로 그 제한 시간만큼 기다린 뒤 안내
+            stall = None
+            if text.startswith("성경 PPT 생성 중"):
+                try:
+                    stall = max(int(self.cfg.get("bible2ppt", "timeout_sec") or 180), 10) + 30
+                except (TypeError, ValueError):
+                    stall = 210
+            self._build_overlay.set_progress(value, text, stall)
+
+    # ---- 생성이 멈췄을 때 (생성 중 화면의 안내 버튼)
+    def _show_ppt_dialogs(self):
+        """PowerPoint 가 띄운 창(라이선스 동의·로그인·오류 등)을 앞으로 가져온다."""
+        if not show_powerpoint_dialogs(powerpoint_pids()):
+            messagebox.showinfo("PowerPoint 창 보기", "화면에 떠 있는 PowerPoint 창을 찾지 못했습니다.\n"
+                                "작업 표시줄에서 PowerPoint 를 눌러 확인하거나, 조금 더 기다려도 그대로면 [생성 중단]을 눌러 주세요.",
+                                parent=self)
+
+    def _cancel_build(self):
+        """이번 생성 때 켜진 PowerPoint 를 강제로 끈다 → 멈춰 있던 COM 호출이 오류로 끝나 생성이 정리된다.
+        (COM 호출은 중간에 끊을 수 없어 이 방법뿐.) 생성 전부터 켜져 있던 PowerPoint 는 사용자 문서가 있으므로 끄지 않는다."""
+        if not self.building:
+            return
+        mine = powerpoint_pids() - self._ppt_before
+        if not mine:
+            messagebox.showerror("생성 중단", "생성 전부터 켜져 있던 PowerPoint 라서 강제로 끄지 않습니다.\n"
+                                 "PowerPoint 에 떠 있는 창을 닫으면 계속되고, 그래도 멈춰 있으면 PowerPoint 를 직접 닫아 주세요.",
+                                 parent=self)
+            return
+        if not messagebox.askyesno("생성 중단", "생성에 쓰는 PowerPoint 를 강제로 끕니다.\n"
+                                   "생성 중에 PowerPoint 에서 직접 연 문서가 있으면 저장하지 않은 내용이 사라집니다.\n\n"
+                                   "중단할까요?", icon="warning", parent=self):
+            return
+        if not self.building:  # 묻는 사이 끝났음
+            return
+        self._build_cancelled = True
+        kill_powerpoint(mine)
+        if self._build_overlay is not None:
+            self._build_overlay.set_step("중단하는 중…")
 
     def _log(self, msg: str):
         self.log_lines.append(f"[{dt.datetime.now():%H:%M:%S}] {msg}")

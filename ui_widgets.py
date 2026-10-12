@@ -7,6 +7,7 @@ import datetime as dt
 import queue
 import re
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
@@ -250,9 +251,12 @@ class BuildOverlay(ctk.CTkFrame):
     _Modal 과 달리 grab 을 걸지 않는다 — 제목 줄(창 옮기기·최소화·닫기)은 생성 중에도 쓸 수 있어야 하므로 덮기만 함.
     사용: App 이 _content 의 1~3행에 grid 로 겹쳐 놓고 set_progress 로 갱신, 끝나면 destroy."""
 
-    def __init__(self, master, opens: bool):
+    STALL_SEC = 60  # 진행이 이만큼 없으면 'PowerPoint 가 응답하지 않음' 안내 (set_progress 의 stall_sec 로 단계별 조정)
+
+    def __init__(self, master, opens: bool, on_show_ppt: Callable[[], None] | None = None,
+                 on_cancel: Callable[[], None] | None = None):
         super().__init__(master, fg_color=BG, corner_radius=0)
-        box = card(self)
+        self._box = box = card(self)
         box.place(relx=0.5, rely=0.42, anchor="center")
         ctk.CTkLabel(box, text="예배 PPT 를 만드는 중입니다", font=font(18, "bold"), text_color=TEXT, anchor="w").pack(
             fill="x", padx=28, pady=(24, 0))
@@ -264,7 +268,7 @@ class BuildOverlay(ctk.CTkFrame):
         self._time = ctk.CTkLabel(box, text="", font=font(12), text_color=TEXT2, anchor="e")
         self._time.pack(fill="x", padx=28, pady=(4, 0))
 
-        warn = ctk.CTkFrame(box, fg_color=WARN_BG, corner_radius=8)
+        self._warn = warn = ctk.CTkFrame(box, fg_color=WARN_BG, corner_radius=8)
         warn.pack(fill="x", padx=28, pady=(12, 26))
         ctk.CTkLabel(warn, text="⚠", font=font(22, "bold"), text_color=WARN_ICON).pack(
             side="left", anchor="n", padx=(14, 10), pady=10)
@@ -277,6 +281,22 @@ class BuildOverlay(ctk.CTkFrame):
                                 f"붙을 수 있습니다.\n{after}",
                      font=font(12), text_color=TEXT, anchor="w", justify="left", wraplength=380).pack(fill="x", pady=(4, 0))
 
+        # 진행이 오래 없을 때만 보이는 안내 (처음 설치한 Office 의 라이선스 동의·로그인 창 등을 PowerPoint 가 기다리는 경우)
+        self._stall = ctk.CTkFrame(box, fg_color=SUBTLE, corner_radius=8)
+        self._stall_text = ctk.CTkLabel(self._stall, text="", font=font(12), text_color=TEXT, anchor="w",
+                                        justify="left", wraplength=400)
+        self._stall_text.pack(fill="x", padx=14, pady=(10, 6))
+        btns = ctk.CTkFrame(self._stall, fg_color="transparent")
+        btns.pack(fill="x", padx=14, pady=(0, 12))
+        if on_show_ppt is not None:
+            secondary_button(btns, "PowerPoint 창 보기", on_show_ppt, width=130).pack(side="left")
+        if on_cancel is not None:
+            stop = secondary_button(btns, "생성 중단", on_cancel, width=90)
+            stop.configure(text_color=DANGER)
+            stop.pack(side="left", padx=(8, 0))
+        self._stall_sec = self.STALL_SEC
+        self._last_progress = time.monotonic()
+
         # 덮인 위젯으로 Tab 이동 금지 (Tk 는 가려진 위젯도 '보이는' 것으로 보고 포커스를 옮겨, 생성 중에 입력칸에 글자가 들어감)
         for seq in ("<Tab>", "<Shift-Tab>"):
             self.bind(seq, lambda e: "break")
@@ -287,10 +307,27 @@ class BuildOverlay(ctk.CTkFrame):
     def _tick(self):
         sec = int((dt.datetime.now() - self._start).total_seconds())
         self._time.configure(text=f"경과 {sec // 60}:{sec % 60:02d}")
+        idle = time.monotonic() - self._last_progress
+        if idle >= self._stall_sec and not self._stall.winfo_ismapped():
+            wait = f"{int(idle) // 60}분" if idle >= 60 else f"{int(idle)}초"
+            self._stall_text.configure(
+                text=f"⏳ {wait} 넘게 진행이 없습니다. PowerPoint 가 다른 창의 응답을 기다리고 있을 수 있습니다 "
+                     "(처음 설치한 Office 의 라이선스 동의·로그인 창, PowerPoint 오류 창 등).\n"
+                     "[PowerPoint 창 보기]로 떠 있는 창을 확인해 닫으면 계속됩니다.")
+            self._warn.pack_configure(pady=(12, 10))
+            self._stall.pack(fill="x", padx=28, pady=(0, 26), after=self._warn)
         self._tick_job = self.after(1000, self._tick)
 
-    def set_progress(self, value: float, text: str) -> None:
+    def set_progress(self, value: float, text: str, stall_sec: float | None = None) -> None:
         self._bar.set(max(0.0, min(1.0, value)))
+        self._step.configure(text=text)
+        self._last_progress = time.monotonic()
+        self._stall_sec = stall_sec or self.STALL_SEC
+        if self._stall.winfo_ismapped():  # 다시 진행되면 안내를 거둠
+            self._stall.pack_forget()
+            self._warn.pack_configure(pady=(12, 26))
+
+    def set_step(self, text: str) -> None:
         self._step.configure(text=text)
 
     def destroy(self):

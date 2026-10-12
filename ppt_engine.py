@@ -748,6 +748,83 @@ def _is_title_of(title: str, caption: str) -> bool:
     return title.startswith(caption) or title.startswith(stem + " ") or title == stem
 
 
+# ---- 생성이 멈췄을 때 (App 의 생성 중 화면에서 사용): 처음 설치한 Office 의 라이선스 동의·로그인 창 등이 뜨면
+#      PowerPoint 가 그 창의 응답을 기다리느라 COM 호출이 끝나지 않는다. COM 호출은 중간에 끊을 수 없으므로
+#      대화 상자를 앞으로 보여 주거나, 이 프로그램이 켠 PowerPoint 를 강제로 끄는(호출이 오류로 끝남) 수밖에 없다.
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+_kernel32.OpenProcess.restype = wintypes.HANDLE
+_kernel32.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                                 ctypes.POINTER(wintypes.DWORD))
+_kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+_kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+_PROCESS_TERMINATE, _PROCESS_QUERY_LIMITED_INFORMATION = 0x0001, 0x1000
+
+
+def _image_name(pid: int) -> str:
+    h = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return ""
+    try:
+        buf, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+        return buf.value if _kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)) else ""
+    finally:
+        _kernel32.CloseHandle(h)
+
+
+def powerpoint_pids() -> set[int]:
+    """실행 중인 POWERPNT.EXE 프로세스 ID (PowerPoint 는 하나만 실행되므로 보통 0~1개)."""
+    try:
+        pids = win32process.EnumProcesses()
+    except pywintypes.error:
+        return set()
+    return {pid for pid in pids if pid and _image_name(pid).lower().endswith("\\powerpnt.exe")}
+
+
+def show_powerpoint_dialogs(pids: set[int]) -> int:
+    """그 PowerPoint 프로세스의 화면에 보이는 창(대화 상자) 중 문서 창이 아닌 것을 앞으로 가져온다 → 개수.
+    문서 창(PPTFrameClass)은 작업 중 숨겨 둔 창이라 건드리지 않는다."""
+    found = []
+
+    def visit(hwnd, _):
+        try:
+            if (win32gui.IsWindowVisible(hwnd) and win32gui.GetClassName(hwnd) != _PPT_FRAME_CLASS
+                    and win32process.GetWindowThreadProcessId(hwnd)[1] in pids):
+                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                if right - left > 20 and bottom - top > 20:  # 크기 없는 보조 창 제외
+                    found.append(hwnd)
+        except pywintypes.error:
+            pass
+        return True
+
+    try:
+        win32gui.EnumWindows(visit, None)
+    except pywintypes.error:
+        return 0
+    for pid in pids:
+        try:
+            ctypes.windll.user32.AllowSetForegroundWindow(pid)
+        except OSError:
+            pass
+    for hwnd in found:
+        _user32.ShowWindow(hwnd, _SW_SHOW)
+        _user32.SetForegroundWindow(hwnd)
+    return len(found)
+
+
+def kill_powerpoint(pids: set[int]) -> int:
+    """PowerPoint 강제 종료 → 끈 개수. 프로세스 ID 가 다른 프로그램에 다시 쓰였을 수 있으므로 지금도 PowerPoint 인 것만."""
+    killed = 0
+    for pid in pids & powerpoint_pids():
+        h = _kernel32.OpenProcess(_PROCESS_TERMINATE, False, pid)
+        if h:
+            try:
+                killed += bool(_kernel32.TerminateProcess(h, 1))
+            finally:
+                _kernel32.CloseHandle(h)
+    return killed
+
+
 def _empty_clipboard() -> None:
     try:
         if _user32.OpenClipboard(None):
