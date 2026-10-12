@@ -311,11 +311,16 @@ class PptEngine:
                 raise PptEngineError(f"PowerPoint 에서 열려 있는 파일을 읽을 수 없습니다. 닫고 다시 시도해 주세요:\n{path}\n{e}") from e
             self.log(f"  ⚠ {path.name}: PowerPoint 에서 열려 있어 저장된 내용으로 만듭니다 (저장하지 않은 수정은 빠짐)")
             path = copy
-        try:
-            # ReadOnly, Untitled, WithWindow
-            return self.app.Presentations.Open(str(path), MSO_TRUE, MSO_FALSE, MSO_FALSE)
-        except pywintypes.com_error as e:
-            raise PptEngineError(f"PPT 파일을 열 수 없습니다:\n{path}\n{_com_msg(e)}") from e
+        # PowerPoint 가 잠깐 바쁘면(앞 생성 결과를 탐색기로 여는 중·막 종료하는 중 등) Open 이 'Failed' 로 거절된다(실측:
+        # 미리 보기 직후 [생성]에서 한 번 발생, 다시 하면 성공) → 잠시 기다렸다가 두 번 더 시도. 손상 파일은 약 3초 늦게 오류.
+        for wait in (1.0, 2.0, None):
+            try:
+                # ReadOnly, Untitled, WithWindow
+                return self.app.Presentations.Open(str(path), MSO_TRUE, MSO_FALSE, MSO_FALSE)
+            except pywintypes.com_error as e:
+                if wait is None:
+                    raise PptEngineError(f"PPT 파일을 열 수 없습니다:\n{path}\n{_com_msg(e)}") from e
+                time.sleep(wait)
 
     # ------------------------------------------------------------------ 병합
     def merge(self, jobs: list[MergeJob], output: Path, global_replacements: dict[str, str] | None = None,
