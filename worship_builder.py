@@ -182,12 +182,45 @@ def saved_name_for_temp(path: Path) -> str:
     return f"{_TEMP_SUFFIX.sub('', path.stem) or path.stem}.pptx"
 
 
+_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003  # 정션
+
+
+def _is_link_dir(entry: os.DirEntry) -> bool:
+    """심볼릭 링크·정션 폴더. 따라 들어가면 자기 자신을 가리키는 링크에서 끝없이 반복한다(실측: 정션 2개에 10초 넘게
+    15000개 이상 — 찬송가 찾기가 화면 스레드를 멈춤). OneDrive 같은 다른 재분석 지점 폴더는 그대로 들어간다."""
+    if entry.is_symlink():
+        return True
+    try:
+        return os.lstat(entry.path).st_reparse_tag == _IO_REPARSE_TAG_MOUNT_POINT
+    except (OSError, AttributeError):
+        return False
+
+
+def _walk_files(folder: Path, recursive: bool):
+    """폴더의 파일 (recursive 면 하위 폴더까지, 링크 폴더는 들어가지 않음). 읽을 수 없는 폴더는 건너뜀."""
+    stack = [str(folder)]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as it:
+                entries = list(it)
+        except OSError:
+            continue
+        for e in entries:
+            try:
+                if e.is_dir():
+                    if recursive and not _is_link_dir(e):
+                        stack.append(e.path)
+                elif e.is_file():
+                    yield e
+            except OSError:
+                continue
+
+
 def list_ppt_files(folder: Path, recursive: bool = False) -> list[Path]:
     if not folder.is_dir():
         return []
-    it = folder.rglob("*") if recursive else folder.iterdir()
-    return sorted((p for p in it if p.is_file() and p.suffix.lower() in PPT_EXTS
-                   and not p.name.startswith("~$")), key=lambda p: p.name)
+    return sorted((Path(e.path) for e in _walk_files(folder, recursive)
+                   if e.name.lower().endswith(PPT_EXTS) and not e.name.startswith("~$")), key=lambda p: p.name)
 
 
 def count_ppt_files(folder: Path, recursive: bool = False, budget: float = 0.3) -> int | None:
@@ -202,8 +235,8 @@ def count_ppt_files(folder: Path, recursive: bool = False, budget: float = 0.3) 
                     if time.monotonic() > deadline:
                         return None
                     try:
-                        if e.is_dir(follow_symlinks=False):
-                            if recursive:
+                        if e.is_dir():
+                            if recursive and not _is_link_dir(e):
                                 stack.append(e.path)
                         elif e.name.lower().endswith(PPT_EXTS) and not e.name.startswith("~$") and e.is_file():
                             n += 1
@@ -234,6 +267,7 @@ _SLIDE_XML = re.compile(r"ppt/slides/slide\d+\.xml")
 _A_T = re.compile(r"<a:t(?:\s[^>]*)?>([^<]*)</a:t>")
 _SHAPE_NAME = re.compile(r'<p:cNvPr\b[^>]*?\sname="([^"]*)"')
 _MAX_SLIDE_XML = 20_000_000  # 슬라이드 XML 하나의 최대 크기 (비정상적으로 큰 파일은 읽지 않음)
+_MAX_TOTAL_XML = 100_000_000  # 슬라이드 XML 합계 최대 크기
 
 
 def template_fill_slots(path: Path, placeholder: str, shape_name: str) -> set[int] | None:
@@ -245,11 +279,15 @@ def template_fill_slots(path: Path, placeholder: str, shape_name: str) -> set[in
         return None
     texts: list[str] = []
     names: set[str] = set()
+    budget = _MAX_TOTAL_XML
     try:
         with zipfile.ZipFile(path) as z:
             for info in z.infolist():
                 if not _SLIDE_XML.fullmatch(info.filename) or info.file_size > _MAX_SLIDE_XML:
                     continue
+                budget -= info.file_size
+                if budget < 0:  # 압축 폭탄처럼 풀면 아주 커지는 파일 — 화면이 멈추지 않게 읽지 않음
+                    return None
                 xml = z.read(info).decode("utf-8", "replace")
                 texts += [html.unescape("".join(_A_T.findall(chunk))) for chunk in xml.split("</a:p>")]
                 names.update(html.unescape(n) for n in _SHAPE_NAME.findall(xml))
@@ -377,9 +415,13 @@ def find_ccm(folder: Path, value: str) -> Path | None:
     if not value or not folder.is_dir():
         return None
     root = folder.resolve()
-    p = (root / value).resolve()
-    if p.is_relative_to(root) and p.is_file() and p.suffix.lower() in PPT_EXTS:
-        return p
+    rel = Path(value)
+    # 절대 경로·드라이브·'..' 는 resolve 전에 거른다 — resolve 가 '\\서버\공유' 경로를 열려고 네트워크에 접속해
+    # (실측 21초 멈춤) Windows 로그인 정보(NTLM)가 그 서버로 보내질 수 있음
+    if not rel.anchor and ".." not in rel.parts:
+        p = (root / rel).resolve()
+        if p.is_relative_to(root) and p.is_file() and p.suffix.lower() in PPT_EXTS:
+            return p
     files = list_ppt_files(folder, recursive=True)
     name = value.rsplit("/", 1)[-1]
     for q in files:
