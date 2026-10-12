@@ -105,15 +105,6 @@ def _disable_full_redraw_on_resize(win: tk.Misc):
         pass
 
 
-def _double_click_ms() -> int:
-    """Windows 더블클릭 간격(ms). 순서 행 알약은 한 번 클릭=수정, 두 번=원본 열기라 이만큼 기다렸다가 수정 창을 띄운다."""
-    try:
-        import ctypes
-        return max(200, min(int(ctypes.windll.user32.GetDoubleClickTime()), 500))
-    except (AttributeError, OSError):
-        return 400
-
-
 def _send_to_recycle_bin(path: Path) -> str | None:
     """파일을 휴지통으로 이동 (실수로 지워도 되살릴 수 있게). 실패하면 오류 메시지."""
     try:
@@ -187,7 +178,6 @@ class App(ctk.CTk):
         self._ppt_before: set[int] = set()  # 생성 시작 때 이미 켜져 있던 PowerPoint (강제 종료하지 않음)
         self._save_job = None
         self._calendar: CalendarPopup | None = None
-        self._pending_click: tuple[int, str] | None = None  # 순서 알약 한 번 클릭 → (행, 수정 창 예약 after id)
         self._bible_preview = False  # 말씀 더블클릭으로 Bible2PPT 실행 중 (PowerPoint 를 쓰므로 생성과 동시에 하지 않음)
 
         self.drag = DragController(self, self._on_drag_hover, self._on_drag_drop, self._on_drag_click)
@@ -617,8 +607,9 @@ class App(ctk.CTk):
             b.pack(side="left", padx=(0, 8))
             b.configure(cursor="hand2")
             self.drag.attach(b, ("new", kind), KIND_LABELS[kind])
-        ctk.CTkLabel(oc, text="버튼을 위 순서 목록으로 끌어다 놓으면 해당 위치에 추가됩니다 (클릭하면 맨 아래에 추가)",
-                     font=font(11), text_color=TEXT2).grid(row=4, column=0, sticky="w", padx=16, pady=(0, 12))
+        ctk.CTkLabel(oc, text="버튼을 순서 목록으로 끌어다 놓으면 그 위치에, 클릭하면 맨 아래에 추가됩니다.\n"
+                              "항목을 누르면 수정, [열기]는 원본 PPT 를 PowerPoint 로 엽니다.",
+                     font=font(11), text_color=TEXT2, justify="left").grid(row=4, column=0, sticky="w", padx=16, pady=(0, 12))
 
     # ================================================================ 하단
     def _build_bottom_bar(self):
@@ -705,7 +696,6 @@ class App(ctk.CTk):
 
     # ================================================================ 순서 목록 렌더링
     def _render_list(self):
-        self._cancel_pending_click()  # 행 번호가 바뀌므로 예약된 수정 창은 취소
         for w in self.scroll.winfo_children():
             w.destroy()
         self.row_widgets = []
@@ -739,25 +729,26 @@ class App(ctk.CTk):
 
         left = ctk.CTkButton(row, text=item.label, width=140, height=36, corner_radius=10, fg_color=CARD, bg_color=SUBTLE,
                              hover_color=BTN_HOVER, border_width=2, border_color=KIND_COLORS[item.kind],
-                             text_color=TEXT, font=font(13, "bold"), command=lambda i=idx: self._on_pill_click(i))
+                             text_color=TEXT, font=font(13, "bold"), command=lambda i=idx: self._edit_item(i))
         left.grid(row=0, column=1)
         line = tk.Frame(row, height=max(1, scaled(self, 1.5)), bg=mode_color(PILL_BORDER))
         line.grid(row=0, column=2, sticky="ew")
-        for w in (row, line):  # 알약 밖(행 빈 곳·연결선) 더블클릭도 원본 열기
-            w.bind("<Double-Button-1>", lambda e, i=idx: self.after_idle(lambda: self._open_item(i)))
         right = ctk.CTkButton(row, text=item.display_value, width=170, height=36, corner_radius=10, fg_color=CARD,
                               bg_color=SUBTLE, hover_color=BTN_HOVER, border_width=1, border_color=PILL_BORDER,
                               text_color=TEXT if item.display_value != "—" else TEXT2, font=font(13),
-                              command=lambda i=idx: self._on_pill_click(i))
+                              command=lambda i=idx: self._edit_item(i))
         right.grid(row=0, column=3)
 
         tools = tk.Frame(row, bg=bg)
         tools.grid(row=0, column=4, padx=(scaled(self, 8), 0))
         hover = mode_color(BTN_HOVER)
-        for text, cmd, color in (("▲", lambda i=idx: self._move_item(i, -1), TEXT2),
+        # [열기] = 원본 PPT (예전에는 알약 더블클릭이라 안내 없이는 몰랐고, 한 번 클릭의 수정 창이 더블클릭 간격만큼 늦었음)
+        for text, cmd, color in (("열기", lambda i=idx: self._open_item(i), ACCENT),
+                                 ("▲", lambda i=idx: self._move_item(i, -1), TEXT2),
                                  ("▼", lambda i=idx: self._move_item(i, 1), TEXT2),
                                  ("✕", lambda i=idx: self._remove_item(i), DANGER)):
-            b = tk.Label(tools, text=text, bg=bg, fg=mode_color(color), font=tk_font(self, 12), cursor="hand2",
+            b = tk.Label(tools, text=text, bg=bg, fg=mode_color(color), font=tk_font(self, 11 if text == "열기" else 12),
+                         cursor="hand2",
                          padx=scaled(self, 7), pady=scaled(self, 4))
             b.pack(side="left")
             b.bind("<Enter>", lambda e, w=b: w.configure(bg=hover))
@@ -960,27 +951,6 @@ class App(ctk.CTk):
         self._set_status(f"추가됨: {item.label} {item.display_value}".strip())
         if idx == len(self.items) - 1:
             self.after(30, lambda: self.scroll._parent_canvas.yview_moveto(1.0))
-
-    # ---- 순서 알약: 한 번 클릭 = 수정 창, 두 번 클릭 = 원본 PPT 열기
-    # CTkButton 은 누를 때마다 command 를 부르므로 더블클릭 간격만큼 기다렸다가 두 번째 클릭이 없으면 수정 창을 연다.
-    def _on_pill_click(self, idx: int):
-        if self.drag.dragging:
-            return
-        pending = self._pending_click
-        self._cancel_pending_click()
-        if pending is not None and pending[0] == idx:
-            self._open_item(idx)
-            return
-        self._pending_click = (idx, self.after(_double_click_ms(), lambda: self._run_pending_click(idx)))
-
-    def _run_pending_click(self, idx: int):
-        self._pending_click = None
-        self._edit_item(idx)
-
-    def _cancel_pending_click(self):
-        if self._pending_click is not None:
-            self.after_cancel(self._pending_click[1])
-            self._pending_click = None
 
     def _open_item(self, idx: int):
         """순서 항목의 원본을 PowerPoint 로 연다. 기도·설교·사용자 지정 = 템플릿, 찬송·CCM = 그 PPT,
