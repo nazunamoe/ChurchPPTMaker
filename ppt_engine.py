@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import shutil
 import tempfile
 import threading
@@ -264,7 +265,34 @@ class PptEngine:
                 pass
             self._anchor = None
 
+    def _already_open(self, path: Path) -> bool:
+        """사용자가 PowerPoint 에서 열어 둔 파일인지 (템플릿을 열어 고치는 중에 생성하는 경우 등)."""
+        want = os.path.normcase(str(Path(path).resolve()))
+        try:
+            pres = self.app.Presentations
+            for i in range(1, pres.Count + 1):
+                try:
+                    if os.path.normcase(str(Path(pres(i).FullName).resolve())) == want:
+                        return True
+                except (pywintypes.com_error, OSError, ValueError):
+                    continue
+        except pywintypes.com_error:
+            pass
+        return False
+
     def _open(self, path: Path):
+        path = Path(path)
+        # 이미 열린 파일을 Presentations.Open 하면 새로 열지 않고 사용자의 그 문서를 돌려준다(실측) → 그대로 쓰면
+        # 첫 원본은 SaveAs 로 결과 파일 이름이 되고, 나머지는 Close 로 닫혀 저장하지 않은 수정이 사라졌다.
+        # 저장된 파일을 복사해 연다 (사용자 문서는 건드리지 않음).
+        if self._already_open(path):
+            copy = self._tmp / f"open_{len(list(self._tmp.glob('open_*')))}{path.suffix}"
+            try:
+                shutil.copy2(path, copy)
+            except OSError as e:
+                raise PptEngineError(f"PowerPoint 에서 열려 있는 파일을 읽을 수 없습니다. 닫고 다시 시도해 주세요:\n{path}\n{e}") from e
+            self.log(f"  ⚠ {path.name}: PowerPoint 에서 열려 있어 저장된 내용으로 만듭니다 (저장하지 않은 수정은 빠짐)")
+            path = copy
         try:
             # ReadOnly, Untitled, WithWindow
             return self.app.Presentations.Open(str(path), MSO_TRUE, MSO_FALSE, MSO_FALSE)
