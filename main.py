@@ -21,7 +21,8 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, Bible2PPTError, match_bible, parse_references
-from config_manager import MAX_PRESETS, ConfigManager, clean_temp_keep, PresetManager, save_worship_to_text, load_worship_from_text
+from config_manager import (MAX_PRESETS, SAVE_ERROR_HINT, ConfigManager, clean_temp_keep, PresetManager, save_worship_to_text,
+                            load_worship_from_text)
 from models import (BIBLE_KEYS, DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
                     KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, make_item, numbered_token, validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
@@ -30,7 +31,7 @@ from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
 from window_frame import CustomFrame
-from worship_builder import (PPT_EXTS, BuildError, BuildRequest, WorshipBuilder, find_template, folder_conflict,
+from worship_builder import (PPT_EXTS, BuildError, _has_reparse_point, BuildRequest, WorshipBuilder, find_template, folder_conflict,
                              list_ccm_files, list_ppt_files, list_temp_results, output_conflict, output_filename, prayer_template_names,
                              prune_temp_results, sanitize_filename, saved_name_for_temp, sermon_template, temp_dir_conflict,
                              temp_result_dir, template_fill_slots, validate_filename_format)
@@ -123,8 +124,9 @@ def _send_to_recycle_bin(path: Path) -> str | None:
                         ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wintypes.LPCWSTR)]
 
         FO_DELETE, FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 3, 0x4, 0x10, 0x40, 0x400
+        FOF_WANTNUKEWARNING = 0x4000  # 휴지통이 없는 곳(USB·네트워크 드라이브)이면 영구 삭제 전에 Windows 가 묻게 함
         op = SHFILEOPSTRUCTW(wFunc=FO_DELETE, pFrom=str(path) + "\0",  # 목록은 NUL 두 개로 끝나야 함
-                             fFlags=FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI)
+                             fFlags=FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI | FOF_WANTNUKEWARNING)
         rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
     except (AttributeError, OSError) as e:
         return f"휴지통으로 옮기지 못했습니다: {e}"
@@ -307,8 +309,14 @@ class App(ctk.CTk):
             self.attributes("-alpha", 1.0)
         except tk.TclError:
             pass
+        self.after(300, self._after_reveal)
+
+    def _after_reveal(self):
+        err = self.cfg.save_error or self.presets.save_error
+        if err:  # 쓰기가 막힌 프로그램 폴더 — 저장되지 않는다는 것을 처음에 한 번 알림
+            messagebox.showwarning("설정 저장 불가", f"{SAVE_ERROR_HINT}\n\n{err}", parent=self)
         if not self.cfg.get("setup_done"):  # 처음 실행: 창이 보인 뒤 설정 마법사
-            self.after(300, self._open_setup_wizard)
+            self._open_setup_wizard()
 
     # ================================================================ 상단
     def _build_header(self):
@@ -1129,11 +1137,16 @@ class App(ctk.CTk):
         out_dir = Path(tempfile.gettempdir()) / "ChurchPPTMaker_말씀"
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
-            for old in out_dir.glob("*.pptx"):  # 하루 지난 미리보기는 정리 (열려 있으면 건너뜀)
-                if time.time() - old.stat().st_mtime > 86400:
-                    old.unlink(missing_ok=True)
         except OSError:
             pass
+        # 하루 지난 미리보기는 정리 (열려 있는 파일은 건너뛰고 나머지는 계속). 폴더가 정션·링크면 링크 대상의
+        # PPT 를 지우게 되므로 정리하지 않음 (임시 실행 폴더와 같은 규칙)
+        for old in ([] if _has_reparse_point(out_dir) else out_dir.glob("*.pptx")):
+            try:
+                if not old.is_symlink() and time.time() - old.stat().st_mtime > 86400:
+                    old.unlink()
+            except OSError:
+                continue
         out = out_dir / f"{sanitize_filename('말씀 ' + item.value)}_{dt.datetime.now():%H%M%S}.pptx"
         self._bible_preview = True
         self._set_status(f"Bible2PPT 로 '{item.value}' 만드는 중…")
@@ -1247,6 +1260,9 @@ class App(ctk.CTk):
             dest = tdir / src.name
             if dest.resolve() == src.resolve():
                 continue  # 이미 템플릿 폴더에 있는 파일
+            if dest.is_symlink():  # 복사가 링크를 따라가 다른 곳의 파일을 덮어쓰지 않도록
+                errors.append(f"{src.name}: 템플릿 폴더의 같은 이름이 바로 가기(링크)입니다")
+                continue
             if dest.exists() and not messagebox.askyesno(
                     "불러오기", f"템플릿 폴더에 '{src.name}' 이 이미 있습니다. 덮어쓸까요?", parent=self):
                 continue
@@ -1606,7 +1622,11 @@ class App(ctk.CTk):
             messagebox.showerror("프리셋 저장", f"프리셋은 최대 {MAX_PRESETS}개까지 저장할 수 있습니다.\n"
                                             "기존 프리셋을 삭제한 뒤 다시 시도해 주세요.", parent=self)
             return
-        self.presets.upsert(name, self.items, fmt)
+        try:
+            self.presets.upsert(name, self.items, fmt)
+        except OSError as e:
+            messagebox.showerror("프리셋 저장", f"{SAVE_ERROR_HINT}\n\n{e}", parent=self)
+            return
         self._refresh_presets()
         self.preset_combo.set(name)
         self._set_status(f"프리셋 '{name}' 저장됨 ({len(self.presets.presets)}/{MAX_PRESETS})")
@@ -1635,7 +1655,11 @@ class App(ctk.CTk):
         if not messagebox.askyesno("프리셋 삭제", f"'{name}' 프리셋을 삭제할까요?\n이 작업은 되돌릴 수 없습니다.",
                                    icon="warning", parent=self):
             return
-        self.presets.delete(name)
+        try:
+            self.presets.delete(name)
+        except OSError as e:
+            messagebox.showerror("프리셋 삭제", f"{SAVE_ERROR_HINT}\n\n{e}", parent=self)
+            return
         self._refresh_presets()
         self.preset_combo.set("")
         self._set_status(f"프리셋 '{name}' 삭제됨")
@@ -1724,7 +1748,13 @@ class App(ctk.CTk):
         if not church:
             errors.append("교회 이름을 입력해 주세요.")
         try:
-            dt.datetime.strptime(date, DATE_FMT)
+            # strptime 은 '2026-1-5' 도 받지만 {년}·{월}·{일}·{요일} 은 YYYY-MM-DD 만 알아봐 빈 값이 됐음 → 맞춰 고쳐 씀
+            normalized = dt.datetime.strptime(date, DATE_FMT).strftime(DATE_FMT)
+            if normalized != date:
+                date = normalized
+                self.date_entry.delete(0, "end")
+                self.date_entry.insert(0, date)
+                self._update_filename_preview()
         except ValueError:
             errors.append("날짜를 YYYY-MM-DD 형식으로 입력해 주세요.")
         if not worship:

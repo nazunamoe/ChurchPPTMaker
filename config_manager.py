@@ -127,9 +127,20 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def _atomic_write_json(path: Path, data) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)  # 디스크가 꽉 차는 등으로 반쯤 쓴 임시 파일
+        except OSError:
+            pass
+        raise
+
+
+SAVE_ERROR_HINT = ("프로그램 폴더에 쓸 수 없어 설정·프리셋이 저장되지 않습니다.\n"
+                   "C:\\Program Files 처럼 쓰기가 막힌 곳이면 문서 폴더 등 다른 곳으로 프로그램을 옮겨 주세요.")
 
 
 def _read_json(path: Path):
@@ -150,6 +161,7 @@ def _read_json(path: Path):
 class ConfigManager:
     def __init__(self, path: Path = CONFIG_PATH):
         self.path = path
+        self.save_error: str | None = None
         raw = _read_json(path) or {}
         self.data = _deep_merge(DEFAULT_CONFIG, raw)
         # 설정 마법사 이전 버전을 쓰던 사람(설정 파일은 있는데 키가 없음)은 이미 설정했으므로 자동으로 띄우지 않음
@@ -165,6 +177,10 @@ class ConfigManager:
         self.data["bible2ppt"]["bible_list"] = [x for x in bl if isinstance(x, str)] if isinstance(bl, list) else []
         self.data["ppt"]["fill_defaults"] = clean_fill_defaults(self.data["ppt"].get("fill_defaults"))
         self.data["ppt"]["temp_keep"] = clean_temp_keep(self.data["ppt"].get("temp_keep"))
+        # 기본값이 None 이라 타입 검사를 받지 않는 값 — 숫자가 아니면 말씀 생성 때 TypeError 가 났음
+        lines = self.data["bible2ppt"].get("lines")
+        if isinstance(lines, bool) or not isinstance(lines, int) or not 0 <= lines <= 9:
+            self.data["bible2ppt"]["lines"] = None
         self.save()
         for key in ("template_dir", "hymn_dir", "ccm_dir", "prayer_dir", "output_dir"):
             try:
@@ -173,7 +189,12 @@ class ConfigManager:
                 pass
 
     def save(self) -> None:
-        _atomic_write_json(self.path, self.data)
+        """저장 실패(쓰기가 막힌 프로그램 폴더 등)는 save_error 에 남기고 계속한다 — 예전에는 시작하자마자 오류로 꺼졌음."""
+        try:
+            _atomic_write_json(self.path, self.data)
+            self.save_error = None
+        except OSError as e:
+            self.save_error = f"{self.path}\n{e}"
 
     def get(self, section: str, key: str | None = None, default=None):
         if key is None:
@@ -225,9 +246,14 @@ class PresetManager:
         if not data or not isinstance(data.get("presets"), list):
             data = {"presets": copy.deepcopy(DEFAULT_PRESETS)}
         self.presets: list[dict] = _clean_presets(data["presets"])[:MAX_PRESETS]
-        self.save()
+        self.save_error: str | None = None
+        try:
+            self.save()
+        except OSError as e:  # 쓰기가 막힌 프로그램 폴더 — 불러온 프리셋으로 계속 (저장할 때 다시 알림)
+            self.save_error = f"{self.path}\n{e}"
 
     def save(self) -> None:
+        """저장 실패는 OSError 그대로 (프리셋 저장·삭제를 누른 사람에게 알려야 함)."""
         _atomic_write_json(self.path, {"presets": self.presets})
 
     def names(self) -> list[str]:
