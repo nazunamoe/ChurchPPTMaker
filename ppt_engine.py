@@ -265,14 +265,21 @@ class PptEngine:
                 pass
             self._anchor = None
 
-    def _already_open(self, path: Path) -> bool:
-        """사용자가 PowerPoint 에서 열어 둔 파일인지 (템플릿을 열어 고치는 중에 생성하는 경우 등)."""
+    def _already_open(self, path: Path, by_name: bool = True) -> bool:
+        """사용자가 PowerPoint 에서 열어 둔 파일인지 (템플릿을 열어 고치는 중에 생성하는 경우 등).
+        OneDrive 폴더의 파일은 FullName 이 'https://d.docs.live.net/…/이름.pptx' 라서(실측) 경로로는 비교할 수 없다
+        → 주소로 열린 문서는 파일 이름이 같으면 열린 것으로 본다 (다른 파일이어도 복사본을 쓸 뿐이라 해가 없음)."""
         want = os.path.normcase(str(Path(path).resolve()))
+        name = Path(path).name.casefold()
         try:
             pres = self.app.Presentations
             for i in range(1, pres.Count + 1):
                 try:
-                    if os.path.normcase(str(Path(pres(i).FullName).resolve())) == want:
+                    full = pres(i).FullName
+                    if "://" in full:
+                        if by_name and pres(i).Name.casefold() == name:
+                            return True
+                    elif os.path.normcase(str(Path(full).resolve())) == want:
                         return True
                 except (pywintypes.com_error, OSError, ValueError):
                     continue
@@ -309,6 +316,12 @@ class PptEngine:
         progress = progress or (lambda *a: None)
         output = Path(output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
+        if self._already_open(output, by_name=False):  # 다 만든 뒤 마지막 저장에서야 실패하지 않도록 미리 확인
+            raise PptEngineError(f"결과 파일이 PowerPoint 에서 열려 있습니다. 닫고 다시 시도해 주세요:\n{output}")
+        # 작업 파일에 만들고 마지막에 output 으로 SaveAs 한다. OneDrive 폴더에 처음부터 SaveAs 하면 PowerPoint 가 그 뒤로
+        # 클라우드 문서로 다뤄 마지막 Save 가 내 PC 의 파일에 들어가지 않았다 (실측: 60초 뒤에도 첫 PPT 슬라이드만 남음)
+        work = self._tmp / "result" / output.name
+        work.parent.mkdir(exist_ok=True)
         self._design_cache.clear()
 
         dest = None
@@ -317,10 +330,10 @@ class PptEngine:
             progress(0, len(jobs), jobs[0].title)
             first = self._open(jobs[0].source)
             try:
-                first.SaveAs(str(output), PP_SAVE_AS_PPTX)
+                first.SaveAs(str(work), PP_SAVE_AS_PPTX)
             except pywintypes.com_error as e:
                 first.Close()
-                raise PptEngineError(f"결과 파일을 저장할 수 없습니다 (파일이 열려 있는지 확인):\n{output}\n{_com_msg(e)}") from e
+                raise PptEngineError(f"작업 파일을 만들 수 없습니다:\n{work}\n{_com_msg(e)}") from e
             dest = first
             self._apply_slide_size(dest)
             ranges = [(1, dest.Slides.Count)]
@@ -349,7 +362,10 @@ class PptEngine:
                     self._replace_in_texts(texts, k, v)
 
             progress(len(jobs), len(jobs), "저장 중")
-            dest.Save()
+            try:
+                dest.SaveAs(str(output), PP_SAVE_AS_PPTX)
+            except pywintypes.com_error as e:
+                raise PptEngineError(f"결과 파일을 저장할 수 없습니다 (파일이 열려 있는지 확인):\n{output}\n{_com_msg(e)}") from e
             self.log(f"저장 완료: {output} (총 {dest.Slides.Count}장)")
             if open_mode and self._reveal(dest, open_mode == "show"):
                 dest = None  # 사용자가 보는 창이 됐으므로 닫지 않음
