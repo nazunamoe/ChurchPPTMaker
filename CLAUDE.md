@@ -104,6 +104,12 @@ ChurchPPTMaker/
   `_Modal` 과 달리 grab 을 걸지 않음 — 제목 줄(창 옮기기·최소화·닫기)은 생성 중에도 써야 하므로 덮기만 하고, [⚙ 설정]·
   [설정 마법사]만 잠근다. 덮기만 하면 키보드 포커스가 덮인 입력칸에 남아 글자가 입력되므로 화면에 포커스를 가져온다.
   `_set_progress` 가 하단 진행 막대와 함께 갱신, `done` 에서 결과 창·에러 창보다 먼저 닫는다.
+  **멈춤 안내**: 진행이 `STALL_SEC`(60초, '성경 PPT 생성 중' 단계는 Bible2PPT 제한 시간 + 30초) 동안 없으면 경고 아래에 안내 +
+  [PowerPoint 창 보기](`ppt_engine.show_powerpoint_dialogs` — POWERPNT 프로세스의 보이는 창 중 문서 창이 아닌 것을 앞으로)·
+  [생성 중단](`App._cancel_build` → `kill_powerpoint`). COM 호출은 중간에 끊을 수 없어(처음 설치한 Office 의 라이선스 동의 창,
+  암호 창 등을 PowerPoint 가 기다리면 끝나지 않음) 프로세스를 끄는 것뿐 — 끄면 멈춘 호출이 오류로 끝나 정상 정리된다(실측).
+  생성 시작 때 `powerpoint_pids()` 를 기억해 **그 뒤에 켜진 PowerPoint 만** 끈다(PowerPoint 는 프로세스 하나라 사용자가 켜 둔
+  것이면 사용자 문서가 같이 사라짐). 중단한 생성은 실패 창 대신 상태 줄에 '생성을 중단했습니다'.
 - 설정 마법사(`ui_widgets.SetupWizard`, 제목 [? 도움말] 옆 [설정 마법사] → `App._open_setup_wizard`): 폴더(템플릿·기도·
   찬송가·CCM) → 설교 템플릿 → 말씀(Bible2PPT.exe·역본1·2·성경 템플릿·줄 수) → 확인(요약, 빠진 것 ⚠) 4단계 `_Modal`.
   [다음]마다 그 단계 검사(`_check_step` — 폴더는 `worship_builder.folder_conflict` + 바꾼 값을 넣은 설정 사본 `_probe_cfg` 로
@@ -239,6 +245,12 @@ Bible2PPT.exe <성경 구절...> [옵션]
 - **원본이 이미 PowerPoint 에 열려 있으면**(템플릿을 열어 고치는 중 생성 등) `Presentations.Open` 은 새로 열지 않고 사용자의
   그 문서를 돌려준다(실측) → 첫 원본이면 SaveAs 로 결과 이름이 되어 닫히고, 나머지면 Close 로 닫혀 저장 안 한 수정이 사라졌음.
   `_open` 이 `_already_open` 으로 확인해 저장된 파일을 작업 폴더에 복사해 연다(경고 로그). 사용자 문서는 그대로 둔다.
+  OneDrive 폴더의 파일은 `FullName` 이 `https://d.docs.live.net/…` 라서(실측) 주소로 열린 문서는 **파일 이름**으로 비교한다.
+- **OneDrive 출력 폴더**: 처음부터 결과 경로로 SaveAs 하면 PowerPoint 가 그 뒤로 클라우드 문서로 다뤄 마지막 `Save` 가 내 PC 의
+  파일에 들어가지 않았다(실측: 60초 뒤에도 첫 PPT 슬라이드만). → 작업 폴더(`_tmp/result/`)에 만들고 **마지막에 결과 경로로
+  SaveAs**. 결과 파일이 이미 PowerPoint 에 열려 있으면 다 만든 뒤가 아니라 시작할 때 오류(`_already_open(by_name=False)`).
+- 암호가 걸린 .pptx/.pptm(ZIP 대신 OLE 형식 — `_OLE_SIGNATURE`)은 열기 전에 오류. 그대로 열면 PowerPoint 가 암호 창을 띄우고
+  끝없이 기다렸음(실측). .ppt 는 원래 OLE 라 구별 못 함 → 멈춤 안내로 처리.
 - 창 숨기기 `_FrameHider`(with 블록, NewWindow·Activate·Close·Quit 때만 짧게): 전용 스레드의 WinEvent 훅(EVENT_OBJECT_SHOW)으로
   `PPTFrameClass` 창이 보이는 즉시 `SW_HIDE`. 작업 스레드에 걸면 COM 호출 중엔 콜백이 오지 않음(실측). 다른 프로세스 창의
   ShowWindow 는 PowerPoint UI 스레드가 바쁘면 ~0.25초 늦으므로, 블록에 들어갈 때 PowerPoint 가 미리 숨겨 만들어 둔 문서 창을
@@ -403,6 +415,12 @@ Bible2PPT.exe <성경 구절...> [옵션]
   - 검증: 실제 PowerPoint 로 열린 문서가 첫·중간 원본일 때 + 결과 열기 모드(사용자 문서·수정 유지, 결과에 저장 안 한 수정 없음),
     격리 설정 5항목 생성(정션 순환 찬송가 폴더·UNC CCM 값·제어 문자 이름·{년}-{월}-{일}_{요일} 형식, 남은 토큰 없음),
     쓰기 금지 폴더(icacls)로 앱 시작·경고·프리셋 저장 에러, 휴지통 삭제 회귀.
+- 2026-10-12: PowerPoint 버전·환경 차이 대비 — OneDrive 파일·출력 폴더, 생성 멈춤 안내·중단, 암호 PPT.
+  - 검증(실제 PowerPoint 16.0 + 이 PC 의 OneDrive): OneDrive 의 열린 템플릿(첫·중간 원본) 보존, OneDrive 출력 폴더 결과가 2장
+    그대로(고치기 전 1장), 결과 열기 모드도 같음. 암호 PPT 병합 → 고치기 전 '암호' 창(NUIDialog)에서 멈춤, [PowerPoint 창 보기]가
+    그 창을 찾아 앞으로·강제 종료로 생성 정리 확인, 고친 뒤 즉시 오류. UI 14건(3초로 줄인 멈춤 안내 표시·진행 재개 시 숨김·
+    중단 후 상태·PowerPoint 종료, 생성 전부터 켜진 PowerPoint 는 끄지 않음), 라이트/다크 화면 캡처, 앞선 회귀 테스트 전부.
+  - 확인 못 함: 실제 라이선스 동의·로그인 창(처음 설치한 Office 가 없어 암호 창으로 대신), PowerPoint 2016 이하.
 
 ## 11. 구현 시 주의사항 (검증된 함정)
 - **CTkToplevel 사용 금지** → `ui_widgets._Modal`(창 내부 오버레이) 상속. CTkToplevel 은 생성 때마다 `bind_all("<Button-1>")`를 누적하고
