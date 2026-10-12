@@ -44,6 +44,7 @@ PP_ALERTS_NONE = 1
 PP_WINDOW_MAXIMIZED = 3
 PP_VIEW_NORMAL = 9
 MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3  # 자동화로 여는 파일의 매크로 강제 비활성
+_OLE_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # OLE 복합 문서 (암호화된 .pptx 는 ZIP 대신 이 형식)
 
 MERGE_SOURCE_FORMATTING = "source_formatting"
 MERGE_WINDOWLESS = "windowless"
@@ -289,6 +290,16 @@ class PptEngine:
 
     def _open(self, path: Path):
         path = Path(path)
+        # 암호가 걸린 PPT 는 PowerPoint 가 암호 창을 띄우고 답을 기다려 생성이 끝나지 않는다(실측).
+        # 암호화된 .pptx/.pptm 은 ZIP 이 아니라 OLE 파일로 저장되므로 열기 전에 알아본다 (.ppt 는 원래 OLE 라 구별 못 함)
+        if path.suffix.lower() in (".pptx", ".pptm"):
+            try:
+                with open(path, "rb") as f:
+                    head = f.read(8)
+            except OSError:
+                head = b""
+            if head == _OLE_SIGNATURE:
+                raise PptEngineError(f"암호가 걸린 PPT 는 사용할 수 없습니다. PowerPoint 에서 암호를 해제한 뒤 다시 시도해 주세요:\n{path}")
         # 이미 열린 파일을 Presentations.Open 하면 새로 열지 않고 사용자의 그 문서를 돌려준다(실측) → 그대로 쓰면
         # 첫 원본은 SaveAs 로 결과 파일 이름이 되고, 나머지는 Close 로 닫혀 저장하지 않은 수정이 사라졌다.
         # 저장된 파일을 복사해 연다 (사용자 문서는 건드리지 않음).
