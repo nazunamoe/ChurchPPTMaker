@@ -20,28 +20,29 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from bible_bridge import Bible2PPT, Bible2PPTError, match_bible, parse_references
+from bible_bridge import Bible2PPT, Bible2PPTError
 from config_manager import (MAX_PRESETS, SAVE_ERROR_HINT, ConfigManager, clean_temp_keep, PresetManager, save_worship_to_text,
                             load_worship_from_text)
-from models import (BIBLE_KEYS, DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
-                    KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, make_item, numbered_token, validate_item)
+from models import (DEFAULT_FILENAME_FORMAT, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
+                    KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, numbered_token, validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
-                        TEXT2, BibleField, BuildOverlay, CalendarPopup, DragController, HelpDialog, ItemDialog, LogDialog,
-                        SettingsDialog, SetupWizard, TempFilesDialog, accent_button, apply_accent, card, font, mode_color, post_to_ui, pump_ui_queue, run_in_thread, scaled,
+                        TEXT2, BuildOverlay, CalendarPopup, DragController, HelpDialog, ItemDialog, LogDialog,
+                        SettingsDialog, SetupWizard, TempFilesDialog, accent_button, apply_accent, card, font, mode_color, open_folder,
+                        post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
 from window_frame import CustomFrame
 from ppt_engine import kill_powerpoint, powerpoint_pids, show_powerpoint_dialogs
-from worship_builder import (PPT_EXTS, BuildError, _has_reparse_point, BuildRequest, WorshipBuilder, find_template, folder_conflict,
+from worship_builder import (PPT_EXTS, BuildError, _has_reparse_point, BuildRequest, WorshipBuilder, find_template,
                              list_ccm_files, list_ppt_files, list_temp_results, output_conflict, output_filename, prayer_template_names,
                              prune_temp_results, sanitize_filename, saved_name_for_temp, sermon_template, temp_dir_conflict,
                              temp_result_dir, template_fill_slots, validate_filename_format)
 
 APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
-MODES = {"라이트": "Light", "다크": "Dark", "시스템": "System"}
 SLIDE_SIZE_LABELS = {"원본": "original", "16:9": "16:9", "4:3": "4:3"}  # 화면 표시 → config.ppt.slide_size
 MIN_FILE_ROWS = 4  # 최소 창 크기에서도 템플릿 파일 목록이 이만큼은 보이도록
+MIN_ORDER_LIST_H = 340  # 최소 창 크기에서 순서 목록 높이 (논리 단위, 순서 7줄)
 FILE_FONT_SIZE = 13.2  # 템플릿 파일 목록 글자 크기 (기본 12 의 110% — 항목 줄 높이도 글자 크기를 따라 커짐)
 ORDER_SCROLL_UNIT = 2.4  # 순서 목록 스크롤 단위(논리 px). 휠 한 칸 = 20단위 ≈ 48 = 행 하나 (CTk 기본 1px → 20px)
 RESIZE_SETTLE_MS = 150  # 창 크기 조절이 이 시간 동안 멈추면 그때 내용 배치를 새 크기로 맞춤
@@ -172,7 +173,6 @@ class App(ctk.CTk):
         _disable_full_redraw_on_resize(self)
 
         self.items: list[ServiceItem] = []
-        self.path_vars: dict[str, tk.StringVar] = {}  # 폴더 키 → 화면에 표시하는 경로 (_choose_folder 가 갱신)
         self.row_widgets: list[tk.Frame] = []
         self._row_parts: list[dict] = []  # 행별 위젯·전체 글자·줄 바꿈 상태 (_layout_rows)
         self._layout_job = None
@@ -212,7 +212,6 @@ class App(ctk.CTk):
         self._refresh_files()
         self._refresh_presets()
         self._render_list()
-        self._update_bible_status()
         self._load_bible_list_if_needed()
         ctk.AppearanceModeTracker.add(self._on_appearance_change)  # '시스템' 모드에서 Windows 테마가 바뀔 때도 호출됨
         ctk.ScalingTracker.add_widget(self._on_scaling_change, self)  # Windows 배율 변경·다른 배율 모니터로 이동
@@ -297,6 +296,9 @@ class App(ctk.CTk):
             return
         scale = ctk.ScalingTracker.get_window_scaling(self)
         need = math.ceil((self.winfo_height() - lb.winfo_height() + lb.winfo_reqheight()) / scale)  # 픽셀 → 논리 단위
+        # 오른쪽 순서 목록도 MIN_ORDER_LIST_H 이상 — 왼쪽 패널이 템플릿 카드 하나로 줄어든 뒤로는 왼쪽 기준만으로는
+        # 창이 660 까지 낮아져 순서가 4줄만 보였음
+        need = max(need, math.ceil((self.winfo_height() - self.list_zone.winfo_height()) / scale + MIN_ORDER_LIST_H))
         screen = self._available_size()[1]  # _fit_to_screen 과 같은 기준 (논리 단위)
         min_w, min_h = round(self.wm_minsize()[0] / scale), max(660, min(need, screen))
         if not self._revealed:  # 처음 열 때: 최소 크기로 맞추고 화면 가운데에 둔 뒤 보이기
@@ -344,11 +346,6 @@ class App(ctk.CTk):
                 self.max_btn = b
         self.settings_btn = secondary_button(bar, "⚙  설정", self._open_settings, width=88)
         self.settings_btn.pack(side="right", padx=(0, 12), pady=(14, 0))
-        current = {v: k for k, v in MODES.items()}.get(self.cfg.get("appearance_mode"), "시스템")
-        self.mode_seg = ctk.CTkSegmentedButton(bar, values=list(MODES), command=self._set_mode, font=font(12),
-                                               selected_color=ACCENT, height=32)
-        self.mode_seg.set(current)
-        self.mode_seg.pack(side="right", padx=10, pady=(14, 0))
         # 제목 줄 빈 곳·제목 글자: 끌면 창 옮기기, 두 번 누르면 최대화/복원, 맨 위 가장자리는 크기 조절
         self._title_widgets = (bar, title)
         self._last_title_press = (0, 0, 0)
@@ -418,12 +415,11 @@ class App(ctk.CTk):
         bar = card(self._content)
         bar.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
         # 줄 틀은 카드 색으로 칠해지므로 둥근 테두리를 덮지 않도록 안쪽으로 들여 배치
-        # 입력칸 너비는 최소 창 너비(MIN_WIDTH)에서 두 줄이 오른쪽 여백 8 까지 꽉 차도록 맞춘 값 (두 줄 오른쪽 끝도 일치).
-        # 줄에 요소를 더하거나 너비를 바꾸면 최소 너비에서 넘치지 않는지 함께 확인할 것.
+        # 출력 폴더·파일 이름 형식은 한 번 정하면 거의 바꾸지 않아 ⚙ 설정으로 옮겼다 → 여기는 예배마다 바꾸는 값만
         line1 = ctk.CTkFrame(bar, fg_color="transparent")
         line1.pack(fill="x", padx=10, pady=(8, 0))
         line2 = ctk.CTkFrame(bar, fg_color="transparent")
-        line2.pack(fill="x", padx=10, pady=(0, 8))
+        line2.pack(fill="x", padx=10, pady=(2, 8))
 
         def label(master, text):
             return ctk.CTkLabel(master, text=text, font=font(13, "bold"), text_color=TEXT)
@@ -454,78 +450,47 @@ class App(ctk.CTk):
         self.worship_entry.pack(side="left", padx=(0, 8))
         self.worship_entry.bind("<KeyRelease>", on_change)
 
-        # 결과 파일 이름 형식: {항목} 자리에 값이 들어감. 프리셋을 저장하면 함께 저장되고, 불러오면 프리셋의 형식으로 바뀜
-        # 출력 폴더: 결과 파일이 저장되는 곳이라 파일 이름 형식 바로 왼쪽에 둔다
-        # 실제 파일 이름 미리보기는 길이가 교회 이름·예배 종류에 따라 늘어나 같은 줄에 두면 상단 카드(창) 너비를 밀어내므로
-        # 아랫줄의 형식 입력칸 밑에 두고, 남는 너비보다 길면 줄여서(…) 표시한다 (_update_filename_preview).
-        line2.grid_columnconfigure(8, weight=1)
-        label(line2, "출력 폴더").grid(row=0, column=0, padx=(8, 8), pady=(5, 2))
-        var = tk.StringVar(value=str(self.cfg.resolve_path("output_dir")))
-        self.path_vars["output_dir"] = var
-        ctk.CTkEntry(line2, textvariable=var, state="readonly", width=245, height=34, font=font(12),
-                     text_color=TEXT2).grid(row=0, column=1)
-        for col, (text, cmd) in enumerate((("📁", lambda: self._choose_folder("output_dir")),
-                                           ("↗", lambda: self._open_folder("output_dir"))), 2):
-            b = secondary_button(line2, text, cmd, width=34)
-            b.configure(height=34)
-            b.grid(row=0, column=col, padx=(4, 0))
-
-        label(line2, "파일 이름").grid(row=0, column=4, padx=(28, 8))
-        self.format_entry = ctk.CTkEntry(line2, width=307, height=34, font=font(13),
-                                         placeholder_text=DEFAULT_FILENAME_FORMAT)
-        self.format_entry.insert(0, self.cfg.get("filename_format") or DEFAULT_FILENAME_FORMAT)
-        self.format_entry.grid(row=0, column=5)
-        self.format_entry.bind("<KeyRelease>", on_change)
-        self.format_menu_btn = secondary_button(line2, "항목 ▾", self._open_format_menu, width=64)
-        self.format_menu_btn.configure(height=34)
-        self.format_menu_btn.grid(row=0, column=6, padx=(4, 4))
-        b = secondary_button(line2, "기본값", lambda: self._set_filename_format(DEFAULT_FILENAME_FORMAT), width=64)
-        b.configure(height=34)
-        b.grid(row=0, column=7)
+        # 저장될 파일 (출력 폴더 + 형식대로 만든 이름). 길면 가운데를 '…' 로 줄임 (_fit_filename_preview)
+        line2.grid_columnconfigure(0, weight=1)
         self.filename_preview = ctk.CTkLabel(line2, text="", font=font(12), text_color=TEXT2, anchor="w", height=20)
-        self.filename_preview.grid(row=1, column=5, columnspan=4, sticky="w", padx=(2, 0), pady=(2, 4))
+        self.filename_preview.grid(row=0, column=0, sticky="w", padx=(8, 0))
+        self.output_btn = secondary_button(line2, "출력 폴더 열기 ↗", lambda: self._open_folder("output_dir"), width=118,
+                                           height=26)
+        self.output_btn.configure(font=font(12))
+        self.output_btn.grid(row=0, column=1, padx=(8, 0))
         self._preview_text = ("", TEXT2)  # 줄이기 전 전체 문구 (창 크기가 바뀌면 다시 맞춤)
-        # 줄 너비가 실제로 바뀐 뒤에 다시 줄인다 (창 크기 조절은 _fit_content 가 멈췄을 때 한 번만 반영하므로 여기서도 한 번)
         line2.bind("<Configure>", lambda e: self._fit_filename_preview(), add="+")
         self._update_filename_preview()
 
-    def _open_format_menu(self):
-        """[항목 ▾] → 커서 위치에 {항목} 넣기 (사용할 수 있는 항목 안내도 겸함)."""
-        menu = tk.Menu(self, tearoff=0, font=tk_font(self, 12))
-        for f in FILENAME_FIELDS:
-            menu.add_command(label=f"{{{f}}}", command=lambda f=f: self._insert_format_field(f))
-        btn = self.format_menu_btn
-        menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
-
-    def _insert_format_field(self, field: str):
-        self.format_entry.insert("insert", f"{{{field}}}")
-        self.format_entry.focus_set()
-        self._update_filename_preview()
-        self._schedule_save()
+    def _filename_format(self) -> str:
+        """결과 파일 이름 형식 (⚙ 설정 → 결과 파일 이름. 프리셋을 불러오면 프리셋의 형식으로 바뀜)."""
+        return (self.cfg.get("filename_format") or "").strip() or DEFAULT_FILENAME_FORMAT
 
     def _set_filename_format(self, fmt: str):
-        self.format_entry.delete(0, "end")
-        self.format_entry.insert(0, fmt)
+        self.cfg.set("filename_format", None, fmt)
         self._update_filename_preview()
-        self._schedule_save()
 
     def _update_filename_preview(self):
-        fmt = self.format_entry.get().strip()
+        fmt = self._filename_format()
         err = validate_filename_format(fmt)
         if err:
-            self._preview_text = ("⚠ " + err.splitlines()[0], DANGER)
+            self._preview_text = ("⚠ 파일 이름 형식: " + err.splitlines()[0] + " — ⚙ 설정에서 고쳐 주세요", DANGER)
         else:
             name = output_filename(self.date_entry.get().strip(), self.church_entry.get().strip(),
                                    self.worship_entry.get().strip(), fmt)
-            self._preview_text = (f"→  {name}", TEXT2)
+            temp = getattr(self, "temp_mode", None)
+            if temp is not None and temp.get():
+                self._preview_text = (f"→  임시 파일로 만들어 바로 엽니다 (저장 안 함): {name}", TEXT2)
+            else:
+                self._preview_text = (f"→  저장: {self.cfg.resolve_path('output_dir') / name}", TEXT2)
         self._fit_filename_preview()
 
     def _fit_filename_preview(self):
-        """미리보기가 형식 입력칸 왼쪽 끝부터 카드 오른쪽 끝까지 남는 너비보다 길면 가운데를 '…' 로 줄인다.
+        """미리보기가 [출력 폴더 열기] 왼쪽까지 남는 너비보다 길면 가운데를 '…' 로 줄인다.
         (긴 글자가 라벨 요청 너비를 키워 상단 카드·창을 넓히지 않도록)"""
         text, color = self._preview_text
         lb = self.filename_preview
-        avail = lb.master.winfo_width() - self.format_entry.winfo_x() - scaled(self, 12)
+        avail = lb.master.winfo_width() - self.output_btn.winfo_width() - scaled(self, 24)
         if avail > 50:  # 아직 배치 전(너비 1)이면 그대로
             f = tkfont.Font(family=FONT_FAMILY, size=-scaled(self, 12))
             if f.measure(text) > avail:
@@ -547,40 +512,28 @@ class App(ctk.CTk):
 
     # ---------------------------------------------------------------- 좌측 패널
     def _build_left(self, parent):
+        """템플릿 파일 관리 (불러오기·열기·삭제). 순서에 넣는 곳은 오른쪽 팔레트 하나로 통일 — 예전에는 여기 목록 끌어다
+        놓기·[순서에 추가]와 '성경 구절 추가' 카드가 팔레트의 [사용자 지정]·[말씀]과 같은 일을 해서 헷갈렸음.
+        폴더 경로는 ⚙ 설정 → 폴더."""
         left = ctk.CTkFrame(parent, fg_color="transparent", width=380)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left.grid_columnconfigure(0, weight=1)
-        left.grid_rowconfigure(1, weight=1)
+        left.grid_rowconfigure(0, weight=1)
 
-        # 폴더
-        fc = card(left)
-        fc.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        fc.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(fc, text="폴더", font=font(15, "bold"), text_color=TEXT).grid(
-            row=0, column=0, columnspan=4, sticky="w", padx=14, pady=(10, 4))
-        # 템플릿 폴더는 [템플릿 파일] 카드 맨 위, 출력 폴더는 상단 파일 이름 줄에 둔다
-        folders = [("prayer_dir", "기도"), ("hymn_dir", "찬송가"), ("ccm_dir", "CCM")]
-        for r, (key, name) in enumerate(folders, 1):
-            self._folder_row(fc, r, key, name)
-        ctk.CTkFrame(fc, width=1, height=6, fg_color="transparent").grid(row=len(folders) + 1, column=0)
-
-        # 템플릿 파일 목록
         tc = card(left)
-        tc.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        tc.grid(row=0, column=0, sticky="nsew")
         tc.grid_columnconfigure(0, weight=1)
         tc.grid_rowconfigure(3, weight=1)
         head = ctk.CTkFrame(tc, fg_color="transparent")
-        head.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 4))
+        head.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 0))
         ctk.CTkLabel(head, text="템플릿 파일", font=font(15, "bold"), text_color=TEXT).pack(side="left")
         self.file_count = ctk.CTkLabel(head, text="", font=font(12), text_color=TEXT2)
         self.file_count.pack(side="left", padx=8)
         secondary_button(head, "↻", self._refresh_files, width=32).pack(side="right")
-        ctk.CTkLabel(head, text="끌어다 놓기 · 더블클릭으로 추가", font=font(11), text_color=TEXT2).pack(
-            side="right", padx=(0, 8))
-        frow = ctk.CTkFrame(tc, fg_color="transparent")
-        frow.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        frow.grid_columnconfigure(1, weight=1)
-        self._folder_row(frow, 0, "template_dir", "폴더")
+        secondary_button(head, "폴더 ↗", lambda: self._open_folder("template_dir"), width=64).pack(side="right", padx=(0, 6))
+        ctk.CTkLabel(tc, text="[사용자 지정] 순서에 쓰는 PPT 입니다.\n더블클릭하면 PowerPoint 로 열어 고칠 수 있습니다.",
+                     font=font(11), text_color=TEXT2, anchor="w", justify="left").grid(
+            row=1, column=0, sticky="w", padx=14, pady=(2, 6))
         self.file_search = ctk.CTkEntry(tc, height=30, font=font(12), placeholder_text="🔍  파일 이름 검색")
         self.file_search.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 6))
         self.file_search.bind("<KeyRelease>", lambda e: self._render_files())
@@ -588,73 +541,25 @@ class App(ctk.CTk):
         box = ctk.CTkFrame(tc, fg_color=SUBTLE, corner_radius=8)
         box.grid(row=3, column=0, sticky="nsew", padx=14)
         self.file_listbox = tk.Listbox(box, height=MIN_FILE_ROWS, activestyle="none", borderwidth=0, highlightthickness=0,
-                                       exportselection=False, selectmode="browse", font=tk_font(self, FILE_FONT_SIZE),
-                                       cursor="hand2")
+                                       exportselection=False, selectmode="browse", font=tk_font(self, FILE_FONT_SIZE))
         sb = ctk.CTkScrollbar(box, command=self.file_listbox.yview)
         self.file_listbox.configure(yscrollcommand=sb.set)
         self.file_listbox.pack(side="left", fill="both", expand=True, padx=(scaled(self, 8), 0), pady=scaled(self, 6))
         sb.pack(side="right", fill="y", padx=2, pady=4)
         self.file_empty = ctk.CTkLabel(box, text="", font=font(12), text_color=TEXT2, fg_color=SUBTLE)
-        self.drag.attach(self.file_listbox, self._file_at)
-        # 기본 동작(누르기/끌기 = 커서 아래 항목 선택)은 끈다 → 선택 표시는 _select_file 만 바꿈 (빈 곳 클릭 시 엉뚱한 선택 방지)
-        for seq in ("<ButtonPress-1>", "<B1-Motion>"):
-            self.file_listbox.bind(seq, lambda e: "break", add="+")
+        # 기본 동작(누르기/끌기 = 커서 아래 항목 선택)은 끈다 → 누른 줄만 선택 (빈 곳 클릭 시 마지막 줄이 선택되지 않게)
+        self.file_listbox.bind("<ButtonPress-1>", self._on_file_press)
+        self.file_listbox.bind("<B1-Motion>", lambda e: "break")
         self.file_listbox.bind("<Double-Button-1>", self._on_file_double_click)
         self._style_file_listbox()
         foot = ctk.CTkFrame(tc, fg_color="transparent")
         foot.grid(row=4, column=0, sticky="ew", padx=14, pady=(6, 12))
-        # [불러오기] [열기] [삭제] [순서에 추가] — 템플릿 폴더 파일 관리
-        secondary_button(foot, "순서에 추가", self._add_selected_file, width=90).pack(side="right")
-        del_btn = secondary_button(foot, "삭제", self._delete_selected_template, width=52)
+        # [불러오기] [열기] [삭제] — 템플릿 폴더 파일 관리
+        del_btn = secondary_button(foot, "삭제", self._delete_selected_template, width=60)
         del_btn.configure(text_color=DANGER)
-        del_btn.pack(side="right", padx=(0, 6))
-        secondary_button(foot, "열기", self._open_selected_template, width=52).pack(side="right", padx=(0, 6))
-        secondary_button(foot, "불러오기", self._import_templates, width=72).pack(side="right", padx=(0, 6))
-
-        # 성경 구절 추가 (Bible2PPT 연동)
-        bc = card(left)
-        bc.grid(row=2, column=0, sticky="ew")
-        bc.grid_columnconfigure(0, weight=1)
-        # 제목 줄: 성경 구절 추가 (Bible2PPT) ······ [↻ 역본 목록] [순서에 추가]
-        bhead = ctk.CTkFrame(bc, fg_color="transparent")
-        bhead.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(10, 6))
-        ctk.CTkLabel(bhead, text="성경 구절 추가", font=font(15, "bold"), text_color=TEXT).pack(side="left")
-        ctk.CTkLabel(bhead, text="Bible2PPT", font=font(11), text_color=TEXT2).pack(side="left", padx=(6, 0))
-        accent_button(bhead, "순서에 추가", self._add_bible_from_form, width=96).pack(side="right")
-        secondary_button(bhead, "↻", self._load_bible_list, width=32).pack(side="right", padx=(0, 6))
-        self.verse_entry = ctk.CTkEntry(bc, height=34, font=font(13), placeholder_text="예: 창1:1-5, 롬1-3, 요3:16")
-        self.verse_entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 6))
-        self.verse_entry.bind("<Return>", lambda e: self._add_bible_from_form())
-        # [기본 성경 역본][역본1 🔍] / [두 번째 성경 역본][역본2 🔍] — 역본2 를 고르면 Bible2PPT 가 두 역본을 나란히 배치 (-b 두 번)
-        brow = ctk.CTkFrame(bc, fg_color="transparent")
-        brow.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14)
-        brow.grid_columnconfigure(1, weight=1)
-        for r, text in enumerate(("기본 성경 역본", "두 번째 성경 역본")):
-            ctk.CTkLabel(brow, text=text, font=font(12), text_color=TEXT2, anchor="w").grid(
-                row=r, column=0, sticky="w", padx=(0, 8), pady=(6 if r else 0, 0))
-        self.bible_field = BibleField(brow, values=self.bible_values, width=180, font_size=12,
-                                      placeholder="비우면 ⚙ 설정의 기본값")
-        self.bible_field.set(self.cfg.get("bible2ppt", "bible") or "")
-        self.bible_field.grid(row=0, column=1, sticky="ew")
-        self.bible2_field = BibleField(brow, values=self.bible_values, width=180, font_size=12,
-                                       placeholder="선택 · 두 역본을 나란히 표시", clear_text="지정 안 함")
-        self.bible2_field.set(self.cfg.get("bible2ppt", "bible2") or "")
-        self.bible2_field.grid(row=1, column=1, sticky="ew", pady=(6, 0))
-        self.bible_status = ctk.CTkLabel(bc, text="", font=font(11), text_color=TEXT2, anchor="w", justify="left")
-        self.bible_status.grid(row=3, column=0, columnspan=2, sticky="w", padx=14, pady=(4, 10))
-
-    def _folder_row(self, parent, r: int, key: str, name: str):
-        """[이름] [경로(읽기 전용)] [📁 지정] [↗ 열기] 한 줄 (parent 의 grid r 행, 1열이 늘어남)."""
-        ctk.CTkLabel(parent, text=name, font=font(12), text_color=TEXT2, width=44, anchor="w").grid(
-            row=r, column=0, padx=(14, 4), pady=3, sticky="w")
-        var = tk.StringVar(value=str(self.cfg.resolve_path(key)))
-        self.path_vars[key] = var
-        ctk.CTkEntry(parent, textvariable=var, state="readonly", height=30, font=font(11),
-                     text_color=TEXT2).grid(row=r, column=1, sticky="ew", pady=3)
-        secondary_button(parent, "📁", lambda: self._choose_folder(key), width=32).grid(
-            row=r, column=2, padx=(4, 0), pady=3)
-        secondary_button(parent, "↗", lambda: self._open_folder(key), width=32).grid(
-            row=r, column=3, padx=(4, 14), pady=3)
+        del_btn.pack(side="right")
+        secondary_button(foot, "열기", self._open_selected_template, width=60).pack(side="right", padx=(0, 6))
+        secondary_button(foot, "불러오기", self._import_templates, width=80).pack(side="right", padx=(0, 6))
 
     # ---------------------------------------------------------------- 우측: 순서 패널 (CLAUDE.md §4 초안)
     def _build_order_panel(self, parent):
@@ -792,6 +697,8 @@ class App(ctk.CTk):
         if not self.building:
             self.build_btn.configure(text=self._build_label())
         self._on_open_after(save=False)
+        if hasattr(self, "filename_preview"):
+            self._update_filename_preview()  # 저장 위치 대신 '임시 파일로 실행' 안내
 
     def _build_label(self) -> str:
         return "예배 PPT 임시 생성 및 실행" if self.temp_mode.get() else "예배 PPT 병합 및 생성"
@@ -983,15 +890,11 @@ class App(ctk.CTk):
             if idx != data:
                 self.items.insert(idx, self.items.pop(data))
                 self._render_list()
-        elif kind == "file":
-            self._add_template(data, idx)
 
     def _on_drag_click(self, payload):
         kind, data = payload
         if kind == "new":
             self._prompt_new(data, len(self.items))
-        elif kind == "file":
-            self._select_file(data)
 
     # ================================================================ 항목 조작
     def _template_names(self) -> list[str]:
@@ -1003,8 +906,6 @@ class App(ctk.CTk):
         prayer = prayer_template_names(self.cfg) if kind == KIND_PRAYER else None
         token = self.cfg.get("ppt", "text_placeholder") or ""
         return ItemDialog(self, kind, item, template_names=self._template_names(), bible_values=self.bible_values,
-                          default_bible=self.bible_field.get().strip(),
-                          default_bible2=self.bible2_field.get().strip(),
                           fallback_bible=self.cfg.get("bible2ppt", "bible") or "", ccm_files=ccm, prayer_names=prayer,
                           initial=initial, fill_slots=self._custom_slots,
                           slot_names=[numbered_token(token, n) for n in range(1, MAX_FILL + 1)] if token else None).show()
@@ -1017,27 +918,18 @@ class App(ctk.CTk):
         return template_fill_slots(path, self.cfg.get("ppt", "text_placeholder") or "",
                                    self.cfg.get("ppt", "text_shape_name") or "")
 
-    def _add_template(self, stem: str, idx: int | None = None):
-        """템플릿 목록에서 고른 PPT 를 사용자 지정 항목으로 추가. 템플릿에 {{내용n}} 자리가 있으면 내용을 입력받는다."""
-        initial = ServiceItem(KIND_CUSTOM, stem)
-        if self._custom_slots(stem):
-            initial = self._dialog(KIND_CUSTOM, initial=initial)
-            if initial is None:  # 취소
-                return
-        self._insert(initial, idx)
-
     def _can_add(self, kind: str) -> bool:
         """새 항목을 추가하기 전에 필요한 설정이 됐는지 확인 (안 됐으면 에러 창)."""
         if kind == KIND_PRAYER:
             names = prayer_template_names(self.cfg)
             if names is None:
                 messagebox.showerror("기도 폴더 없음", "기도 템플릿 폴더를 찾을 수 없습니다.\n"
-                                     "왼쪽 [폴더]의 '기도' 줄에서 📁 로 폴더를 지정해 주세요.", parent=self)
+                                     "⚙ 설정 → 폴더의 '기도' 줄에서 폴더를 지정해 주세요.", parent=self)
                 return False
             if not names:
                 messagebox.showerror("기도 템플릿 없음", "기도 폴더에 PPT 파일이 없습니다.\n"
                                      "합심기도.pptx, 중보기도.pptx 처럼 기도 종류별 PPT 를 넣거나\n"
-                                     "왼쪽 [폴더]의 '기도' 줄에서 📁 로 다른 폴더를 지정해 주세요.", parent=self)
+                                     "⚙ 설정 → 폴더의 '기도' 줄에서 다른 폴더를 지정해 주세요.", parent=self)
                 return False
         if kind == KIND_BIBLE:
             try:
@@ -1206,7 +1098,7 @@ class App(ctk.CTk):
         if self._shown_files:
             self.file_empty.place_forget()
         else:
-            self.file_empty.configure(text="PPT 파일이 없습니다.\n템플릿 폴더에 .pptx 를 넣어 주세요." if not q
+            self.file_empty.configure(text="PPT 파일이 없습니다.\n아래 [불러오기]로 PPT 를 넣어 주세요." if not q
                                       else "검색 결과가 없습니다.")
             self.file_empty.place(relx=0.5, rely=0.5, anchor="center")
 
@@ -1214,19 +1106,25 @@ class App(ctk.CTk):
         self.file_listbox.configure(bg=mode_color(SUBTLE), fg=mode_color(TEXT), selectbackground=mode_color(ACCENT),
                                     selectforeground="#FFFFFF")
 
-    def _file_at(self, e) -> tuple[tuple[str, str], str] | None:
-        """목록 상자에서 누른 위치의 파일 → 드래그 payload (빈 공간이면 None)."""
+    def _file_at(self, e) -> str | None:
+        """목록 상자에서 누른 위치의 파일 이름 (빈 공간이면 None)."""
         lb = self.file_listbox
         i = lb.nearest(e.y)
         box = lb.bbox(i) if i >= 0 else None
         if not box or not box[1] <= e.y < box[1] + box[3]:
             return None
-        stem = self._shown_files[i]
-        return ("file", stem), stem
+        return self._shown_files[i]
+
+    def _on_file_press(self, e):
+        stem = self._file_at(e)
+        if stem is not None:
+            self._select_file(stem)
+        return "break"
 
     def _on_file_double_click(self, e):
-        if (got := self._file_at(e)) is not None:
-            self._add_template(got[1])
+        if (stem := self._file_at(e)) is not None:
+            self._select_file(stem)
+            self._open_selected_template()
 
     def _select_file(self, stem: str):
         self.selected_file = stem
@@ -1298,24 +1196,6 @@ class App(ctk.CTk):
         self.selected_file = None
         self._refresh_files()
         self._set_status(f"삭제됨(휴지통): {path.name}")
-
-    def _add_selected_file(self):
-        if not self.selected_file:
-            messagebox.showerror("선택 필요", "추가할 템플릿 파일을 먼저 선택해 주세요.", parent=self)
-            return
-        self._add_template(self.selected_file)
-
-    def _choose_folder(self, key: str):
-        path = filedialog.askdirectory(parent=self, initialdir=self.path_vars[key].get(), mustexist=True)
-        if not path:
-            return
-        if (err := folder_conflict(self.cfg, key, path)) is not None:
-            messagebox.showerror("폴더 지정", err, parent=self)
-            return
-        self.cfg.set("paths", key, path)
-        self.path_vars[key].set(str(self.cfg.resolve_path(key)))
-        if key == "template_dir":
-            self._refresh_files()
 
     def _open_result(self, path, show: bool | None = None) -> bool:
         """생성된 PPT 열기. 슬라이드 쇼(show, 생략 시 하단 옵션)면 PowerPoint 의 Show 동작(POWERPNT.EXE /s)으로 바로 쇼 시작."""
@@ -1411,37 +1291,7 @@ class App(ctk.CTk):
             os.startfile(folder)
 
     def _open_folder(self, key: str):
-        path = self.cfg.resolve_path(key)
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        # 설정 파일이 고쳐져 폴더 대신 실행 파일 등을 가리키면 startfile 이 그것을 실행하므로 폴더일 때만 연다
-        if not path.is_dir():
-            messagebox.showerror("폴더 열기", f"폴더를 찾을 수 없습니다:\n{path}", parent=self)
-            return
-        os.startfile(path)
-
-    def _add_bible_from_form(self):
-        if not self._can_add(KIND_BIBLE):
-            return
-        text = self.verse_entry.get().strip()
-        if not text:
-            messagebox.showerror("입력 오류", "성경 구절을 입력해 주세요.", parent=self)
-            return
-        try:
-            refs = parse_references(text)
-        except ValueError as e:
-            messagebox.showerror("입력 오류", str(e), parent=self)
-            return
-        bible, bible2 = self.bible_field.get().strip(), self.bible2_field.get().strip()
-        if bible2 and not bible and not (self.cfg.get("bible2ppt", "bible") or "").strip():  # 역본1 칸이 비면 기본 역본
-            messagebox.showerror("입력 오류", "두 번째 역본을 쓰려면 첫 번째 역본도 지정해 주세요\n"
-                                 "(또는 ⚙ 설정에서 기본 성경 역본을 지정).", parent=self)
-            return
-        item = make_item(KIND_BIBLE, "말씀", ", ".join(refs), {"bible": bible, "bible2": bible2})
-        self._insert(item)
-        self.verse_entry.delete(0, "end")
+        open_folder(self, self.cfg.resolve_path(key))
 
     def _bible2ppt(self) -> Bible2PPT:
         b = self.cfg.get("bible2ppt")
@@ -1451,27 +1301,8 @@ class App(ctk.CTk):
         exe = self.cfg.resolve_file(self.cfg.get("bible2ppt", "exe_path"))
         return bool(exe and exe.is_file())
 
-    def _update_bible_status(self, note: str | None = None, error: bool = False):
-        exe = self.cfg.resolve_file(self.cfg.get("bible2ppt", "exe_path"))
-        if not self._bible_exe_ok():
-            self.bible_status.configure(text="⚠ Bible2PPT.exe 경로가 설정되지 않았습니다 — 상단 ⚙ 설정에서 지정",
-                                        text_color=DANGER)
-            return
-        if note is None:
-            note = f"역본 {len(self.bible_values)}종" if self.bible_values else "역본 목록 없음 — ↻ 로 불러오기"
-            error = not self.bible_values
-        self.bible_status.configure(text=f"✔ 연결됨: {exe.name} · {note}",
-                                    text_color=DANGER if error else KIND_COLORS[KIND_PRAYER])
-
     def _set_bible_values(self, values: list[str]):
-        self.bible_values = values
-        for field in (self.bible_field, self.bible2_field):
-            field.set_values(values)
-            cur = field.get().strip()
-            # 직접 입력한 이름(예전 형식)은 목록의 같은 이름 항목으로 맞춤. 목록에 없는 이름·빈 칸은 그대로 둔다
-            # (빈 역본1 = 기본 역본 사용, 빈 역본2 = 한 역본만 — 사용자가 지운 칸을 기본값으로 다시 채우지 않음)
-            if cur and (match := match_bible(cur, values)) and match != cur:
-                field.set(match)
+        self.bible_values = values  # [말씀] 창의 역본 🔍 목록
 
     def _load_bible_list_if_needed(self):
         """exe 는 있는데 캐시된 역본 목록이 없으면 (예: 첫 실행·이전 버전 설정) 조용히 불러온다."""
@@ -1479,31 +1310,19 @@ class App(ctk.CTk):
             self._load_bible_list(silent=True)
 
     def _load_bible_list(self, silent: bool = False):
-        if self._bible_loading:
-            return
-        if not self._bible_exe_ok():
-            if not silent:
-                messagebox.showerror("Bible2PPT", "Bible2PPT.exe 경로가 설정되지 않았습니다. ⚙ 설정에서 지정해 주세요.",
-                                     parent=self)
+        """[말씀] 창의 역본 🔍 목록을 Bible2PPT 에서 받아 캐시 (⚙ 설정에서 exe 를 지정하면 거기서도 불러옴)."""
+        if self._bible_loading or not self._bible_exe_ok():
             return
         self._bible_loading = True
-        self._update_bible_status("역본 목록을 불러오는 중…")
-        if not silent:
-            self._set_status("성경 목록을 불러오는 중…")
 
         def done(res, err):
             self._bible_loading = False
             if err:
-                self._update_bible_status("역본 목록을 불러오지 못함 — ↻ 로 다시 시도", error=True)
                 if not silent:
                     messagebox.showerror("Bible2PPT", str(err), parent=self)
-                    self._set_status("성경 목록 불러오기 실패")
                 return
             self.cfg.set("bible2ppt", "bible_list", res)
             self._set_bible_values(res)
-            self._update_bible_status()
-            if not silent:
-                self._set_status(f"성경 {len(res)}종을 불러왔습니다.")
 
         run_in_thread(lambda: self._bible2ppt().list_bibles(), done)
 
@@ -1544,45 +1363,32 @@ class App(ctk.CTk):
         self._set_order_scroll_speed()
         self._render_list()
 
-    def _set_mode(self, label: str):
-        mode = MODES[label]
-        ctk.set_appearance_mode(mode)
-        self.cfg.set("appearance_mode", None, mode)
-
-    def _apply_bible_settings(self, old: dict[str, str]):
-        """설정 창·설정 마법사에서 Bible2PPT·기본 역본을 저장한 뒤 메인 성경 영역에 반영. old: 저장 전 기본 역본."""
+    def _apply_bible_settings(self):
+        """설정 창·설정 마법사에서 Bible2PPT 를 저장한 뒤 역본 목록 반영 (exe 를 바꿨는데 목록을 못 받았으면 다시 시도)."""
         self._set_bible_values(list(self.cfg.get("bible2ppt", "bible_list") or []))
-        # 기본 역본을 바꿨으면, 그 기본값을 그대로 쓰던(비었거나 예전 기본값인) 칸만 새 기본값으로
-        for field, k in zip((self.bible_field, self.bible2_field), BIBLE_KEYS):
-            new = self.cfg.get("bible2ppt", k) or ""
-            if new != old[k] and field.get().strip() in ("", old[k]):
-                field.set(new)
-        self._update_bible_status()
-        self._load_bible_list_if_needed()  # exe 를 바꿨는데 목록을 못 받았으면 다시 시도
-
-    def _old_bibles(self) -> dict[str, str]:
-        return {k: self.cfg.get("bible2ppt", k) or "" for k in BIBLE_KEYS}
+        self._load_bible_list_if_needed()
 
     def _open_setup_wizard(self):
         if self.building:
             return
-        old = self._old_bibles()
         saved = SetupWizard(self, self.cfg).show()
         if not self.cfg.get("setup_done"):  # 처음 실행: 닫기만 해도 다시 띄우지 않음 (제목 줄 버튼으로 언제든)
             self.cfg.set("setup_done", None, True)
         if not saved:
             return
-        for key in self.path_vars:
-            self.path_vars[key].set(str(self.cfg.resolve_path(key)))
         self._refresh_files()
-        self._apply_bible_settings(old)
+        self._update_filename_preview()
+        self._apply_bible_settings()
         self._set_status("설정 마법사의 내용을 저장했습니다.")
 
     def _open_settings(self):
-        old = self._old_bibles()
         old_accent = bool(self.cfg.get("use_system_accent"))
-        if SettingsDialog(self, self.cfg).show():
-            self._apply_bible_settings(old)
+        preview = (self.date_entry.get().strip(), self.church_entry.get().strip(), self.worship_entry.get().strip())
+        if SettingsDialog(self, self.cfg, preview).show():
+            ctk.set_appearance_mode(self.cfg.get("appearance_mode") or "System")
+            self._refresh_files()
+            self._update_filename_preview()
+            self._apply_bible_settings()
             # 보관 개수를 줄였으면 바로 정리 (임시 폴더가 원본 폴더와 겹치면 정리하지 않음)
             removed = [] if temp_dir_conflict(self.cfg) else prune_temp_results(self.cfg.get("ppt", "temp_keep"))
             self._set_status("설정을 저장했습니다." + (f" 오래된 임시 파일 {len(removed)}개를 지웠습니다." if removed else ""),
@@ -1597,8 +1403,7 @@ class App(ctk.CTk):
     def _save_basic(self):
         self._save_job = None
         self.cfg.set("church_name", None, self.church_entry.get().strip(), save=False)
-        self.cfg.set("worship_type", None, self.worship_entry.get().strip(), save=False)
-        self.cfg.set("filename_format", None, self.format_entry.get().strip())
+        self.cfg.set("worship_type", None, self.worship_entry.get().strip())
 
     # ================================================================ 프리셋
     def _refresh_presets(self):
@@ -1613,10 +1418,10 @@ class App(ctk.CTk):
         if not self.items:
             messagebox.showerror("프리셋 저장", "저장할 예배 순서가 없습니다.", parent=self)
             return
-        fmt = self.format_entry.get().strip()
+        fmt = self._filename_format()
         err = validate_filename_format(fmt)
         if err:
-            messagebox.showerror("프리셋 저장", err, parent=self)
+            messagebox.showerror("프리셋 저장", err + "\n(⚙ 설정 → 결과 파일 이름)", parent=self)
             return
         if self.presets.exists(name):
             if not messagebox.askyesno("프리셋 저장", f"'{name}' 프리셋이 이미 있습니다. 덮어쓸까요?", parent=self):
@@ -1699,8 +1504,7 @@ class App(ctk.CTk):
                 self.date_entry.delete(0, "end")
                 self.date_entry.insert(0, meta["날짜"])
             if meta.get("파일이름형식") and not validate_filename_format(meta["파일이름형식"]):
-                self.format_entry.delete(0, "end")
-                self.format_entry.insert(0, meta["파일이름형식"])
+                self._set_filename_format(meta["파일이름형식"])
             self._update_filename_preview()
 
             self._save_basic()
@@ -1730,7 +1534,7 @@ class App(ctk.CTk):
                 "church_name": self.church_entry.get().strip(),
                 "worship_type": self.worship_entry.get().strip(),
                 "date": self.date_entry.get().strip(),
-                "filename_format": self.format_entry.get().strip(),
+                "filename_format": self._filename_format(),
             }
             save_worship_to_text(Path(path), self.items, meta)
             self._set_status(f"파일로 저장되었습니다: {Path(path).name}")
@@ -1762,9 +1566,9 @@ class App(ctk.CTk):
             errors.append("날짜를 YYYY-MM-DD 형식으로 입력해 주세요.")
         if not worship:
             errors.append("예배 종류를 입력해 주세요.")
-        fmt = self.format_entry.get().strip()
+        fmt = self._filename_format()
         if err := validate_filename_format(fmt):
-            errors.append(err)
+            errors.append(err + "\n(⚙ 설정 → 결과 파일 이름에서 고쳐 주세요)")
         if not self.items:
             errors.append("예배 순서가 비어 있습니다.")
         for i, it in enumerate(self.items, 1):

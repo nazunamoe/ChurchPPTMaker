@@ -4,6 +4,7 @@ from __future__ import annotations
 import calendar
 import copy
 import datetime as dt
+import os
 import queue
 import re
 import threading
@@ -18,10 +19,30 @@ from typing import Any, Callable
 import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, bible_sources, filter_bibles, match_bible, search_names, short_source, split_bible
-from models import (BIBLE_KEYS, CUSTOM_TEXT_KEYS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON,
-                    MAX_FILL, ServiceItem, ccm_title, make_item, numbered_token, validate_item)
+from models import (BIBLE_KEYS, CUSTOM_TEXT_KEYS, DEFAULT_FILENAME_FORMAT, FILENAME_FIELDS, KIND_BIBLE, KIND_CCM, KIND_CUSTOM,
+                    KIND_HYMN, KIND_LABELS, KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, ccm_title, make_item,
+                    numbered_token, validate_item)
 from config_manager import TEMP_KEEP_MAX, clean_temp_keep
-from worship_builder import PPT_EXTS, count_ppt_files, folder_conflict, output_conflict, temp_dir_conflict
+from worship_builder import (PPT_EXTS, count_ppt_files, folder_conflict, output_conflict, output_filename, temp_dir_conflict,
+                             validate_filename_format)
+
+APPEARANCE_MODES = {"라이트": "Light", "다크": "Dark", "시스템": "System"}  # 화면 표시 → config.appearance_mode
+SETTINGS_FOLDERS = (  # (설정 키, 이름) — ⚙ 설정의 '폴더' (설정 마법사는 WIZARD_FOLDERS)
+    ("template_dir", "템플릿"), ("prayer_dir", "기도"), ("hymn_dir", "찬송가"), ("ccm_dir", "CCM"),
+    ("output_dir", "출력 (결과 저장)"),
+)
+
+
+def open_folder(master, path: Path) -> None:
+    """폴더를 탐색기로 연다. 설정이 고쳐져 폴더 대신 실행 파일 등을 가리키면 startfile 이 그것을 실행하므로 폴더일 때만."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    if not path.is_dir():
+        messagebox.showerror("폴더 열기", f"폴더를 찾을 수 없습니다:\n{path}", parent=master)
+        return
+    os.startfile(path)
 
 # ---------------------------------------------------------------- Win11 Fluent 톤 색상 (light, dark)
 FONT_FAMILY = "Malgun Gothic"
@@ -598,11 +619,102 @@ class BibleField(ctk.CTkFrame):
 
 
 # ---------------------------------------------------------------- 항목 입력 다이얼로그
+class _SearchList:
+    """다이얼로그 안의 [검색칸] + 목록 (CCM 곡·사용자 지정 템플릿 고르기). 공백 AND·초성 검색(search_names).
+    항목이 수백 개일 수 있어 CTk 위젯 대신 tk.Listbox 하나로 그림 (BiblePicker 와 같은 이유).
+    ↑↓·PgUp/PgDn 이동, 더블클릭 = 다이얼로그 확인(_ok), Enter 는 다이얼로그가 처리. get() = 고른 값 (없으면 '')."""
+
+    def __init__(self, dialog: "ItemDialog", body, row: int, label: str, values: list[str], titles: list[str],
+                 current: str, missing_text: str, icon: str, rows: int, empty_text: str,
+                 on_pick: Callable[[], None] | None = None):
+        self._dialog = dialog
+        self._values, self._titles = list(values), list(titles)
+        self._icon, self._empty_text, self._on_pick = icon, empty_text, on_pick
+        self._shown: list[int] = []
+        self._job = None
+        dialog._lbl(body, row, label)
+        self.entry = ctk.CTkEntry(body, width=400, placeholder_text="🔍  파일 이름 검색 (초성 가능)", font=font(13))
+        self.entry.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
+        box = ctk.CTkFrame(body, fg_color=SUBTLE, corner_radius=8, border_width=1, border_color=BORDER)
+        box.grid(row=row + 1, column=0, columnspan=2, sticky="nsew", padx=16, pady=(2, 4))
+        self.listbox = tk.Listbox(box, height=rows, width=56, activestyle="none", borderwidth=0,
+                                  highlightthickness=0, exportselection=False, font=tk_font(dialog, 14),
+                                  bg=_pick(SUBTLE), fg=_pick(TEXT), selectbackground=_pick(ACCENT),
+                                  selectforeground="#FFFFFF")
+        sb = ctk.CTkScrollbar(box, command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=sb.set)
+        self.listbox.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=6)
+        sb.pack(side="right", fill="y", padx=2, pady=4)
+        self.count = ctk.CTkLabel(body, text="", font=font(11), text_color=TEXT2, anchor="w")
+        self.count.grid(row=row + 2, column=0, columnspan=2, sticky="w", padx=16)
+
+        self.entry.bind("<KeyRelease>", self._on_key)
+        for seq, d in (("<Down>", 1), ("<Up>", -1), ("<Next>", 10), ("<Prior>", -10)):
+            self.entry.bind(seq, lambda e, d=d: self._move(d))
+        self.listbox.bind("<<ListboxSelect>>", lambda e: self._picked())
+        self.listbox.bind("<Double-Button-1>", lambda e: dialog._ok())
+        if current and current not in self._values:  # 폴더에서 사라진 파일 → 이름으로 검색해 보여 줌
+            self.entry.insert(0, missing_text)
+        self.refresh(select=current)
+
+    def _on_key(self, event):
+        if event.keysym in ("Up", "Down", "Prior", "Next", "Return", "KP_Enter", "Escape"):
+            return
+        if self._job:
+            self._dialog.after_cancel(self._job)
+        self._job = self._dialog.after(120, self.refresh)  # 한글 조합 중 매 키마다 다시 그리지 않도록
+
+    def refresh(self, select: str = ""):
+        self._job = None
+        self._shown = search_names(self._titles, self.entry.get())
+        lb = self.listbox
+        lb.delete(0, "end")
+        for i in self._shown:
+            lb.insert("end", f"  {self._icon}  {self._titles[i]}")
+        if not self._values:
+            text = self._empty_text
+        elif not self._shown:
+            text = "검색 결과가 없습니다."
+        else:
+            text = f"{len(self._shown)}개 / 전체 {len(self._values)}개   ·   ↑↓ 이동, Enter 확인, 더블클릭 선택"
+        self.count.configure(text=text)
+        if self._shown:
+            self._select(next((k for k, i in enumerate(self._shown) if self._values[i] == select), 0))
+        else:
+            self._picked()
+
+    def _select(self, pos: int):
+        lb = self.listbox
+        lb.selection_clear(0, "end")
+        lb.selection_set(pos)
+        lb.activate(pos)
+        lb.see(pos)
+        self._picked()
+
+    def _picked(self):
+        if self._on_pick is not None:
+            self._on_pick()
+
+    def _move(self, delta: int):
+        if self._shown:
+            cur = self.listbox.curselection()
+            self._select(max(0, min(len(self._shown) - 1, (cur[0] + delta) if cur else 0)))
+        return "break"
+
+    def get(self) -> str:
+        if self._job:  # 입력 직후 Enter → 검색 결과부터 반영
+            self._dialog.after_cancel(self._job)
+            self.refresh()
+        cur = self.listbox.curselection()
+        return self._values[self._shown[cur[0]]] if cur and self._shown else ""
+
+
 class ItemDialog(_Modal):
     """기도/찬송/말씀/설교/CCM/사용자 지정 입력. 필수값 미입력 시 에러 창.
     item 이 있으면 수정, initial 이 있으면 그 값으로 채운 새 항목 추가 (예: 템플릿 목록에서 고른 PPT).
     사용자 지정은 내용1~3 칸을 항상 보여 주고, fill_slots(템플릿 이름) → 템플릿에 있는 입력 자리 번호(모르면 None)를 안내한다."""
     CCM_ROWS = 10
+    TEMPLATE_ROWS = 7  # 사용자 지정은 아래에 내용1~3 칸이 더 있어 목록을 조금 낮게
 
     def __init__(self, master, kind: str, item: ServiceItem | None = None,
                  template_names: list[str] | None = None, bible_values: list[str] | None = None,
@@ -630,19 +742,17 @@ class ItemDialog(_Modal):
         self.bible2_widget = None
         self._fallback_bible = fallback_bible.strip()  # 역본1 칸이 비었을 때 쓰는 설정의 기본 역본
         self.preacher_entry = None
-        self.ccm_listbox = None
+        self.ccm_picker: _SearchList | None = None
+        self.template_picker: _SearchList | None = None
+        self._template_original = ""
+        self.slot_hint = None
         row = 1
         if kind == KIND_CCM:
             self._build_ccm(body, row, ccm_files or [], item.value if item else "")
             row += 3
         if kind == KIND_CUSTOM:
-            self._lbl(body, row, "호출할 PPT 이름 *")
-            self.label_widget = ctk.CTkComboBox(body, width=260, values=template_names or [], font=font(13),
-                                                dropdown_font=font(13), command=lambda _: self._update_custom_slots())
-            self.label_widget.set(item.label if item else "")
-            self.label_widget.bind("<KeyRelease>", lambda e: self._schedule_custom_slots())
-            self.label_widget.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
-            row += 1
+            self._build_template_picker(body, row, template_names or [], item.label if item else "")
+            row += 3
         if kind == KIND_PRAYER:
             # 기도 종류 = 설정의 기도 템플릿 폴더에 있는 PPT (합심기도, 중보기도 …)
             names = list(prayer_names or [])
@@ -672,7 +782,7 @@ class ItemDialog(_Modal):
             row += 1
 
         if kind == KIND_PRAYER:
-            ctk.CTkLabel(body, text="왼쪽 [폴더]의 기도 폴더에서 고른 PPT 의 {{내용1}} 자리에 기도자 이름이 들어갑니다.",
+            ctk.CTkLabel(body, text="기도 폴더(⚙ 설정 → 폴더)에서 고른 PPT 의 {{내용1}} 자리에 기도자 이름이 들어갑니다.",
                          font=font(11), text_color=TEXT2).grid(row=row, column=0, columnspan=2, padx=16, sticky="w")
             row += 1
         if kind == KIND_SERMON:
@@ -686,10 +796,10 @@ class ItemDialog(_Modal):
                          font=font(11), text_color=TEXT2).grid(row=row, column=0, columnspan=2, padx=16, sticky="w")
             row += 1
         if kind == KIND_BIBLE:
-            # 역본을 지정한 항목이면 그 값, 아니면(새 항목·기본 역본 사용 항목) 메인 성경 영역의 역본
+            # 역본을 지정한 항목이면 그 값, 아니면(새 항목·기본 역본 사용 항목) 빈 칸 = ⚙ 설정의 기본 역본을 따름
             own = any(self.options.get(k) for k in BIBLE_KEYS)
             self._lbl(body, row, "성경 역본 (선택)")
-            self.bible_widget = BibleField(body, values=bible_values, width=260, placeholder="비우면 기본 역본")
+            self.bible_widget = BibleField(body, values=bible_values, width=260, placeholder="비우면 설정의 기본 역본")
             self.bible_widget.set(self.options.get("bible", "") if own else default_bible)
             self.bible_widget.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
             row += 1
@@ -729,23 +839,22 @@ class ItemDialog(_Modal):
         self.bind_return(self._ok)
 
     def on_shown(self):
-        # 사용자 지정은 템플릿이 이미 정해졌으면(목록에서 고름·수정) 내용 칸부터
-        custom_named = self.kind == KIND_CUSTOM and self.label_widget.get().strip()
-        (self.label_widget if self.kind == KIND_CUSTOM and not custom_named else self.value_entry).focus_set()
+        # 사용자 지정: 새로 추가할 때는 템플릿 검색칸, 수정할 때는 내용 칸부터
+        if self.kind == KIND_CUSTOM and not self._template_original:
+            self.template_picker.entry.focus_set()
+        else:
+            self.value_entry.focus_set()
 
     # ---- 사용자 지정: 템플릿에 있는 {{내용n}} 자리에 맞춰 입력칸 보이기
-    def _schedule_custom_slots(self):
-        if self._slots_job:
-            self.after_cancel(self._slots_job)
-        self._slots_job = self.after(250, self._update_custom_slots)  # 이름을 입력하는 동안 매 키마다 파일을 읽지 않도록
-
     def _update_custom_slots(self):
         self._slots_job = None
-        name = self.label_widget.get().strip()
+        if self.slot_hint is None:  # 목록을 처음 채울 때 (안내 칸을 만들기 전)
+            return
+        name = self._custom_label().strip()
         slots = self._fill_slots(name) if (self._fill_slots and name) else set()
         tokens = "~".join((self._slot_names[0], self._slot_names[-1]))
         if not name:
-            text = f"템플릿 폴더에서 이 이름의 PPT 를 찾아 호출합니다.\n내용1~3 은 템플릿의 {tokens} 자리에 들어갑니다."
+            text = f"위 목록에서 템플릿 PPT 를 고르세요.\n내용1~3 은 템플릿의 {tokens} 자리에 들어갑니다."
         elif slots is None:
             text = "이 템플릿 형식(.ppt)은 입력 자리를 미리 확인할 수 없습니다."
         elif slots:
@@ -756,80 +865,29 @@ class ItemDialog(_Modal):
 
     # ---- CCM: 파일명이 정형화돼 있지 않으므로 CCM 폴더의 파일을 이름으로 검색해 고른다 (항목 값 = 상대 경로)
     def _build_ccm(self, body, row: int, files: list[str], current: str):
-        self._ccm_files = list(files)
-        self._ccm_titles = [ccm_title(f) + (f"   ({f.rsplit('/', 1)[0]})" if "/" in f else "") for f in files]
-        self._ccm_shown: list[int] = []
-        self._ccm_job = None
-        self._lbl(body, row, "CCM 파일 *")
-        self.value_entry = ctk.CTkEntry(body, width=400, placeholder_text="🔍  파일 이름 검색 (초성 가능)", font=font(13))
-        self.value_entry.grid(row=row, column=1, padx=(0, 16), pady=6, sticky="w")
-        box = ctk.CTkFrame(body, fg_color=SUBTLE, corner_radius=8, border_width=1, border_color=BORDER)
-        box.grid(row=row + 1, column=0, columnspan=2, sticky="nsew", padx=16, pady=(2, 4))
-        # 곡이 수백 개일 수 있어 CTk 위젯 대신 tk.Listbox 하나로 그림 (BiblePicker 와 같은 이유)
-        self.ccm_listbox = tk.Listbox(box, height=self.CCM_ROWS, width=56, activestyle="none", borderwidth=0,
-                                      highlightthickness=0, exportselection=False, font=tk_font(self, 14),
-                                      bg=_pick(SUBTLE), fg=_pick(TEXT), selectbackground=_pick(ACCENT),
-                                      selectforeground="#FFFFFF")
-        sb = ctk.CTkScrollbar(box, command=self.ccm_listbox.yview)
-        self.ccm_listbox.configure(yscrollcommand=sb.set)
-        self.ccm_listbox.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=6)
-        sb.pack(side="right", fill="y", padx=2, pady=4)
-        self.ccm_count = ctk.CTkLabel(body, text="", font=font(11), text_color=TEXT2, anchor="w")
-        self.ccm_count.grid(row=row + 2, column=0, columnspan=2, sticky="w", padx=16)
-
-        self.value_entry.bind("<KeyRelease>", self._ccm_on_key)
-        for seq, d in (("<Down>", 1), ("<Up>", -1), ("<Next>", 10), ("<Prior>", -10)):
-            self.value_entry.bind(seq, lambda e, d=d: self._ccm_move(d))
-        self.ccm_listbox.bind("<Double-Button-1>", lambda e: self._ok())
         current = current.replace("\\", "/")
-        if current and current not in self._ccm_files:  # 폴더에서 사라진 파일 → 이름으로 검색해 보여 줌
-            self.value_entry.insert(0, ccm_title(current))
-        self._ccm_refresh(select=current)
+        self.ccm_picker = _SearchList(
+            self, body, row, "CCM 파일 *", files,
+            [ccm_title(f) + (f"   ({f.rsplit('/', 1)[0]})" if "/" in f else "") for f in files], current,
+            missing_text=ccm_title(current), icon="🎵", rows=self.CCM_ROWS,
+            empty_text="CCM 폴더에 PPT 파일이 없습니다. ⚙ 설정 → 폴더에서 CCM 폴더를 지정해 주세요.")
+        self.value_entry = self.ccm_picker.entry
 
-    def _ccm_on_key(self, event):
-        if event.keysym in ("Up", "Down", "Prior", "Next", "Return", "KP_Enter", "Escape"):
-            return
-        if self._ccm_job:
-            self.after_cancel(self._ccm_job)
-        self._ccm_job = self.after(120, self._ccm_refresh)  # 한글 조합 중 매 키마다 다시 그리지 않도록
+    # ---- 사용자 지정: 템플릿 폴더의 PPT 를 검색해 고른다 (항목 label = 파일 이름)
+    def _build_template_picker(self, body, row: int, names: list[str], current: str):
+        self._template_original = current
+        self.template_picker = _SearchList(
+            self, body, row, "템플릿 PPT *", names, names, current, missing_text=current, icon="📄",
+            rows=self.TEMPLATE_ROWS, on_pick=self._update_custom_slots,
+            empty_text="템플릿 폴더에 PPT 파일이 없습니다. 왼쪽 [템플릿 파일]의 [불러오기]로 넣어 주세요.")
+        self.label_widget = self.template_picker
 
-    def _ccm_refresh(self, select: str = ""):
-        self._ccm_job = None
-        self._ccm_shown = search_names(self._ccm_titles, self.value_entry.get())
-        lb = self.ccm_listbox
-        lb.delete(0, "end")
-        for i in self._ccm_shown:
-            lb.insert("end", f"  🎵  {self._ccm_titles[i]}")
-        if not self._ccm_files:
-            text = "CCM 폴더에 PPT 파일이 없습니다. 왼쪽 [폴더]에서 CCM 폴더를 지정해 주세요."
-        elif not self._ccm_shown:
-            text = "검색 결과가 없습니다."
-        else:
-            text = f"{len(self._ccm_shown)}개 / 전체 {len(self._ccm_files)}개   ·   ↑↓ 이동, Enter 확인, 더블클릭 선택"
-        self.ccm_count.configure(text=text)
-        if self._ccm_shown:
-            pos = next((k for k, i in enumerate(self._ccm_shown) if self._ccm_files[i] == select), 0)
-            self._ccm_select(pos)
-
-    def _ccm_select(self, pos: int):
-        lb = self.ccm_listbox
-        lb.selection_clear(0, "end")
-        lb.selection_set(pos)
-        lb.activate(pos)
-        lb.see(pos)
-
-    def _ccm_move(self, delta: int):
-        if self._ccm_shown:
-            cur = self.ccm_listbox.curselection()
-            self._ccm_select(max(0, min(len(self._ccm_shown) - 1, (cur[0] + delta) if cur else 0)))
-        return "break"
-
-    def _ccm_value(self) -> str:
-        if self._ccm_job:  # 입력 직후 Enter → 검색 결과부터 반영
-            self.after_cancel(self._ccm_job)
-            self._ccm_refresh()
-        cur = self.ccm_listbox.curselection()
-        return self._ccm_files[self._ccm_shown[cur[0]]] if cur else ""
+    def _custom_label(self) -> str:
+        """고른 템플릿 이름. 목록에 없는 템플릿(폴더에서 사라짐)을 쓰던 항목은 검색칸을 그대로 두면 원래 이름 유지."""
+        name = self.template_picker.get()
+        if not name and self._template_original and self.template_picker.entry.get().strip() == self._template_original:
+            return self._template_original
+        return name
 
     @staticmethod
     def _lbl(master, row, text):
@@ -837,7 +895,13 @@ class ItemDialog(_Modal):
             row=row, column=0, padx=16, pady=6, sticky="w")
 
     def _ok(self):
-        label = self.label_widget.get() if self.label_widget is not None else KIND_LABELS[self.kind]
+        if self.template_picker is not None:
+            label = self._custom_label()
+        else:
+            label = self.label_widget.get() if self.label_widget is not None else KIND_LABELS[self.kind]
+        if self.kind == KIND_CUSTOM and not label.strip():
+            messagebox.showerror("입력 오류", "목록에서 템플릿 PPT 를 골라 주세요.", parent=self)
+            return
         if self.kind == KIND_PRAYER and not label.strip():
             messagebox.showerror("입력 오류", "기도 종류(템플릿)를 선택해 주세요.", parent=self)
             return
@@ -852,7 +916,7 @@ class ItemDialog(_Modal):
             self.options["preacher"] = self.preacher_entry.get()
         for n, e in self.text_entries.items():
             self.options[CUSTOM_TEXT_KEYS[n]] = e.get()
-        value = self._ccm_value() if self.ccm_listbox is not None else self.value_entry.get()
+        value = self.ccm_picker.get() if self.ccm_picker is not None else self.value_entry.get()
         item = make_item(self.kind, label, value, self.options)
         err = validate_item(item)
         if err:
@@ -946,9 +1010,11 @@ class SettingsDialog(_BibleListMixin, _Modal):
     저장 시 불러온 목록은 config.bible2ppt.bible_list 에 캐시된다.
     항목이 많아 한 화면에 다 보이지 않으므로 한 쪽에 모두 두고 세로로 스크롤한다(높이는 메인 창에 맞춤, _fit_body)."""
 
-    def __init__(self, master, cfg):
+    def __init__(self, master, cfg, preview: tuple[str, str, str] = ("", "", "")):
+        """preview: 파일 이름 형식 미리보기에 쓸 (날짜, 교회 이름, 예배 종류) — 메인 화면의 지금 값."""
         super().__init__(master, "설정")
         self.cfg = cfg
+        self._preview_values = preview
         b = cfg.get("bible2ppt")
         p = cfg.get("ppt")
         t = cfg.get("item_templates")
@@ -982,6 +1048,51 @@ class SettingsDialog(_BibleListMixin, _Modal):
             e = ctk.CTkEntry(body, width=width, font=font(13))
             e.insert(0, value or "")
             return e
+
+        # 폴더: 한 번 정하면 거의 바꾸지 않으므로 메인 화면이 아니라 여기서 (예전에는 메인 왼쪽·상단에 5줄)
+        section("폴더")
+        self.folder_entries: dict[str, tuple[ctk.CTkEntry, str]] = {}  # 키 → (입력칸, 처음 보인 값)
+        for key, name in SETTINGS_FOLDERS:
+            shown = str(cfg.resolve_path(key))
+            e = entry(shown)
+            btns = ctk.CTkFrame(body, fg_color="transparent")
+            secondary_button(btns, "📁", lambda k=key: self._choose_folder(k), width=36).pack(side="left")
+            secondary_button(btns, "↗", lambda k=key: self._open_folder(k), width=36).pack(side="left", padx=(4, 0))
+            ctk.CTkLabel(body, text=name, font=font(13), text_color=TEXT, anchor="w", width=150).grid(
+                row=r, column=0, padx=16, pady=5, sticky="w")
+            e.grid(row=r, column=1, pady=5, sticky="w")
+            btns.grid(row=r, column=2, padx=(6, 16), pady=5, sticky="w")
+            self.folder_entries[key] = (e, shown)
+            r += 1
+        ctk.CTkLabel(body, text="템플릿·기도·찬송가·CCM 폴더의 PPT 를 가져와 하나로 합치고, 결과는 출력 폴더에 저장합니다.\n"
+                                "출력 폴더는 원본 폴더 밖이어야 합니다 (원본을 덮어쓰지 않도록). ↗ 는 폴더 열기.",
+                     font=font(11), text_color=TEXT2, anchor="w", justify="left").grid(
+            row=r, column=1, columnspan=2, sticky="w", pady=(0, 6))
+        r += 1
+
+        section("결과 파일 이름")
+        fbox = ctk.CTkFrame(body, fg_color="transparent")
+        self.format_entry = ctk.CTkEntry(fbox, width=320, font=font(13), placeholder_text=DEFAULT_FILENAME_FORMAT)
+        self.format_entry.insert(0, cfg.get("filename_format") or DEFAULT_FILENAME_FORMAT)
+        self.format_entry.pack(side="left")
+        self.format_entry.bind("<KeyRelease>", lambda e: self._update_format_preview(), add="+")
+        self.format_menu_btn = secondary_button(fbox, "항목 ▾", self._open_format_menu, width=64)
+        self.format_menu_btn.pack(side="left", padx=(6, 0))
+        secondary_button(fbox, "기본값", lambda: self._set_format(DEFAULT_FILENAME_FORMAT), width=64).pack(
+            side="left", padx=(4, 0))
+        ctk.CTkLabel(body, text="형식", font=font(13), text_color=TEXT, anchor="w", width=150).grid(
+            row=r, column=0, padx=16, pady=5, sticky="w")
+        fbox.grid(row=r, column=1, columnspan=2, pady=5, sticky="w")
+        r += 1
+        self.format_preview = ctk.CTkLabel(body, text="", font=font(12), anchor="w", justify="left")
+        self.format_preview.grid(row=r, column=1, columnspan=2, sticky="w")
+        r += 1
+        ctk.CTkLabel(body, text="{항목} 자리에 값이 들어갑니다. [항목 ▾]로 넣을 수 있습니다.\n"
+                                "프리셋을 저장하면 이 형식도 함께 저장되고, 프리셋을 불러오면 그 프리셋의 형식으로 바뀝니다.",
+                     font=font(11), text_color=TEXT2, anchor="w", justify="left").grid(
+            row=r, column=1, columnspan=2, sticky="w", pady=(0, 14))
+        r += 1
+        self._update_format_preview()
 
         section("Bible2PPT 연동")
         self.exe = entry(b.get("exe_path"))
@@ -1074,6 +1185,11 @@ class SettingsDialog(_BibleListMixin, _Modal):
         self._update_default_labels()
 
         section("화면")
+        current = {v: k for k, v in APPEARANCE_MODES.items()}.get(cfg.get("appearance_mode"), "시스템")
+        self.mode_seg = ctk.CTkSegmentedButton(body, values=list(APPEARANCE_MODES), font=font(12), selected_color=ACCENT,
+                                               height=32)
+        self.mode_seg.set(current)
+        row("화면 모드", self.mode_seg)
         self.use_accent = ctk.BooleanVar(value=bool(cfg.get("use_system_accent")))
         ctk.CTkCheckBox(body, text="Windows 강조 색 사용", variable=self.use_accent, font=font(13), checkbox_width=20,
                         checkbox_height=20, fg_color=ACCENT).grid(row=r, column=0, columnspan=2, padx=16, pady=5, sticky="w")
@@ -1109,6 +1225,78 @@ class SettingsDialog(_BibleListMixin, _Modal):
         for n, lbl in enumerate(self._default_labels, 1):
             lbl.configure(text=numbered_token(base, n) if base else f"{n}번")
 
+    # ---- 폴더
+    def _folder_raw(self, key: str) -> str:
+        """저장할 값: 처음 보인 값(절대 경로) 그대로면 원래 값 (기본 'templates' 같은 상대 경로는 exe 를 옮겨도 따라가도록)."""
+        e, shown = self.folder_entries[key]
+        raw = path_text(e)
+        return self.cfg.data["paths"].get(key, "") if raw == shown else raw
+
+    def _choose_folder(self, key: str):
+        e = self.folder_entries[key][0]
+        p = self.cfg.resolve_file(path_text(e)) if path_text(e) else None
+        path = filedialog.askdirectory(parent=self, initialdir=str(p) if p and p.is_dir() else None, mustexist=True)
+        if path:
+            e.delete(0, "end")
+            e.insert(0, str(Path(path)))
+
+    def _open_folder(self, key: str):
+        raw = path_text(self.folder_entries[key][0])
+        if raw:
+            open_folder(self, self.cfg.resolve_file(raw))
+
+    def _check_folders(self):
+        """(문제 칸, 메시지) 또는 None. 설정 마법사와 같은 규칙 + 출력 폴더."""
+        probe = copy.copy(self.cfg)
+        probe.data = copy.deepcopy(self.cfg.data)
+        for key, _name in SETTINGS_FOLDERS:
+            probe.data["paths"][key] = self._folder_raw(key)
+        for key, name in SETTINGS_FOLDERS:
+            e = self.folder_entries[key][0]
+            raw = path_text(e)
+            if not raw:
+                return e, f"{name} 폴더를 지정해 주세요."
+            p = self.cfg.resolve_file(raw)
+            if key == "output_dir":
+                try:  # 출력 폴더는 없으면 만든다 (생성 때도 만듦)
+                    p.mkdir(parents=True, exist_ok=True)
+                except OSError as err:
+                    return e, f"출력 폴더를 만들 수 없습니다:\n{p}\n{err}"
+            if not p.is_dir():
+                return e, f"{name} 폴더를 찾을 수 없습니다:\n{p}"
+            if (err := folder_conflict(probe, key, p)) is not None:
+                return e, err
+        if (err := output_conflict(probe, probe.resolve_path("output_dir") / "_.pptx")) is not None:
+            return self.folder_entries["output_dir"][0], err
+        return None
+
+    # ---- 결과 파일 이름 형식
+    def _open_format_menu(self):
+        """[항목 ▾] → 커서 위치에 {항목} 넣기 (사용할 수 있는 항목 안내도 겸함)."""
+        menu = tk.Menu(self, tearoff=0, font=tk_font(self, 12))
+        for f in FILENAME_FIELDS:
+            menu.add_command(label=f"{{{f}}}", command=lambda f=f: self._insert_format_field(f))
+        btn = self.format_menu_btn
+        menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+
+    def _insert_format_field(self, field: str):
+        self.format_entry.insert("insert", f"{{{field}}}")
+        self.format_entry.focus_set()
+        self._update_format_preview()
+
+    def _set_format(self, fmt: str):
+        self.format_entry.delete(0, "end")
+        self.format_entry.insert(0, fmt)
+        self._update_format_preview()
+
+    def _update_format_preview(self):
+        fmt = self.format_entry.get().strip()
+        if err := validate_filename_format(fmt):
+            self.format_preview.configure(text="⚠ " + err.splitlines()[0], text_color=DANGER)
+        else:
+            date, church, worship = self._preview_values
+            self.format_preview.configure(text="→  " + output_filename(date, church, worship, fmt), text_color=TEXT2)
+
     def _fit_body(self):
         """스크롤 영역 크기: 너비는 내용에 맞추고, 높이는 내용과 메인 창(제목·버튼 자리를 뺀 만큼) 중 작은 쪽."""
         self.body.update_idletasks()
@@ -1138,6 +1326,16 @@ class SettingsDialog(_BibleListMixin, _Modal):
             return 180
 
     def _save(self):
+        if (problem := self._check_folders()) is not None:
+            widget, msg = problem
+            self._reveal(widget)
+            messagebox.showerror("폴더", msg, parent=self)
+            return
+        fmt = self.format_entry.get().strip()
+        if err := validate_filename_format(fmt):
+            self._reveal(self.format_entry)
+            messagebox.showerror("결과 파일 이름", err, parent=self)
+            return
         try:
             timeout = int(self.timeout.get().strip() or 180)
             if timeout < 10:
@@ -1185,6 +1383,10 @@ class SettingsDialog(_BibleListMixin, _Modal):
                  bible_list=self.bible_values if self._loaded_for is not None and self._loaded_for == self._exe() else [])
         self.cfg.get("item_templates").update(sermon_file=sermon_raw)
         self.cfg.data["use_system_accent"] = bool(self.use_accent.get())
+        for key, _name in SETTINGS_FOLDERS:
+            self.cfg.data["paths"][key] = self._folder_raw(key)
+        self.cfg.data["filename_format"] = fmt
+        self.cfg.data["appearance_mode"] = APPEARANCE_MODES.get(self.mode_seg.get(), "System")
         p = self.cfg.get("ppt")
         p.update(text_placeholder=self.placeholder.get().strip(), text_shape_name=self.shape_name.get().strip(),
                  fill_defaults=[e.get().strip() for e in self.fill_defaults],
@@ -1209,7 +1411,7 @@ class SetupWizard(_BibleListMixin, _Modal):
     """설정 마법사: 처음 쓰는 사람이 폴더(템플릿·기도·찬송가·CCM) → 설교 템플릿 → 말씀(Bible2PPT·역본·성경 템플릿·줄 수)
     → 확인 순서로 지정한다. 처음 실행할 때 자동으로, 이후에는 제목 줄 [설정 마법사]로 띄운다.
     단계마다 [다음]에서 그 단계 값을 검사하고, [마침]에서만 저장한다(중간에 닫으면 아무것도 바뀌지 않음).
-    값은 ⚙ 설정·왼쪽 폴더 줄과 같은 config 키를 쓰고, 검사 규칙도 같다(folder_conflict·output_conflict·temp_dir_conflict)."""
+    값은 ⚙ 설정과 같은 config 키를 쓰고, 검사 규칙도 같다(folder_conflict·output_conflict·temp_dir_conflict)."""
     STEPS = ("폴더", "설교", "말씀", "확인")
     FIELD_W = 400  # 입력칸 너비 (모든 단계 공통 — 단계를 넘겨도 다이얼로그 너비가 그대로)
 
@@ -1498,7 +1700,7 @@ class SetupWizard(_BibleListMixin, _Modal):
                     return e, err
             probe = self._probe_cfg()  # 바꾼 폴더가 출력 폴더와 겹쳐 결과가 원본을 덮어쓰지 않는지
             if (err := output_conflict(probe, probe.resolve_path("output_dir") / "_.pptx")) is not None:
-                return None, err + "\n(출력 폴더는 메인 화면 상단 '출력 폴더' 줄에서 바꿀 수 있습니다.)"
+                return None, err + "\n(출력 폴더는 ⚙ 설정 → 폴더에서 바꿀 수 있습니다.)"
         elif i == 1:
             raw = path_text(self.sermon_file)
             if raw:
