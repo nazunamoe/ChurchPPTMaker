@@ -21,13 +21,13 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from bible_bridge import Bible2PPT, Bible2PPTError
-from config_manager import (MAX_PRESETS, SAVE_ERROR_HINT, ConfigManager, clean_temp_keep, PresetManager, save_worship_to_text,
+from config_manager import (MAX_PRESET_NAME, MAX_PRESETS, SAVE_ERROR_HINT, ConfigManager, clean_temp_keep, PresetManager, save_worship_to_text,
                             load_worship_from_text)
 from models import (DEFAULT_FILENAME_FORMAT, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, KIND_HYMN, KIND_LABELS,
                     KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, numbered_token, validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
                         TEXT2, BuildOverlay, CalendarPopup, DragController, HelpDialog, ItemDialog, LogDialog,
-                        SettingsDialog, SetupWizard, TempFilesDialog, accent_button, apply_accent, card, font, mode_color, open_folder,
+                        SettingsDialog, SetupWizard, TempFilesDialog, TextPrompt, accent_button, apply_accent, card, font, mode_color, open_folder,
                         post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
@@ -42,6 +42,7 @@ APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
 SLIDE_SIZE_LABELS = {"원본": "original", "16:9": "16:9", "4:3": "4:3"}  # 화면 표시 → config.ppt.slide_size
 MIN_FILE_ROWS = 4  # 최소 창 크기에서도 템플릿 파일 목록이 이만큼은 보이도록
+PRESET_PLACEHOLDER = "— 프리셋을 고르면 바로 적용 —"  # 프리셋 콤보에 아무것도 적용 안 됐을 때
 MIN_ORDER_LIST_H = 340  # 최소 창 크기에서 순서 목록 높이 (논리 단위, 순서 7줄)
 FILE_FONT_SIZE = 13.2  # 템플릿 파일 목록 글자 크기 (기본 12 의 110% — 항목 줄 높이도 글자 크기를 따라 커짐)
 ORDER_SCROLL_UNIT = 2.4  # 순서 목록 스크롤 단위(논리 px). 휠 한 칸 = 20단위 ≈ 48 = 행 하나 (CTk 기본 1px → 20px)
@@ -544,12 +545,12 @@ class App(ctk.CTk):
         self._style_file_listbox()
         foot = ctk.CTkFrame(tc, fg_color="transparent")
         foot.grid(row=4, column=0, sticky="ew", padx=14, pady=(6, 12))
-        # [불러오기] [열기] [삭제] — 템플릿 폴더 파일 관리
+        # [PPT 추가] [열기] [삭제] — 템플릿 폴더 파일 관리 ('불러오기'는 프리셋·순서 파일과 뜻이 겹쳐 이름을 바꿈)
         del_btn = secondary_button(foot, "삭제", self._delete_selected_template, width=60)
         del_btn.configure(text_color=DANGER)
         del_btn.pack(side="right")
         secondary_button(foot, "열기", self._open_selected_template, width=60).pack(side="right", padx=(0, 6))
-        secondary_button(foot, "불러오기", self._import_templates, width=80).pack(side="right", padx=(0, 6))
+        secondary_button(foot, "PPT 추가", self._import_templates, width=80).pack(side="right", padx=(0, 6))
 
     # ---------------------------------------------------------------- 우측: 순서 패널 (CLAUDE.md §4 초안)
     def _build_order_panel(self, parent):
@@ -567,22 +568,27 @@ class App(ctk.CTk):
         clear_btn = secondary_button(head, "전체 비우기", self._clear_items, width=80)  # 옆 버튼과 같은 배경, 글자만 빨강
         clear_btn.configure(height=28, font=font(12), text_color=DANGER)
         clear_btn.pack(side="right")
-        # 파일 입출력: 프리셋 행과 헷갈리지 않도록 제목 줄에 둠 → [파일 불러오기] [파일 내보내기] [전체 비우기]
-        for text, cmd in (("파일 내보내기", self._export_worship_file), ("파일 불러오기", self._import_worship_file)):
-            b = secondary_button(head, text, cmd, width=96)
-            b.configure(height=28, font=font(12))
-            b.pack(side="right", padx=(0, 6))
+        # 순서 텍스트 파일 입출력: '불러오기'가 프리셋·템플릿과 뜻이 겹쳐 헷갈렸으므로 [순서 파일 ▾] 메뉴 하나로
+        self.order_file_btn = secondary_button(head, "순서 파일 ▾", self._open_order_file_menu, width=96)
+        self.order_file_btn.configure(height=28, font=font(12))
+        self.order_file_btn.pack(side="right", padx=(0, 6))
 
-        # 프리셋 행: [프리셋 ▼] [저장] [불러오기] [삭제]
+        # 프리셋 행: 프리셋 [▼ 고르면 바로 적용] [프리셋으로 저장] [삭제]
+        # 예전에는 골라도 [불러오기]를 또 눌러야 했고, 새 프리셋은 같은 칸에 이름을 직접 쳐야 해서 알아채기 어려웠음
         prow = ctk.CTkFrame(oc, fg_color="transparent")
         prow.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
-        self.preset_combo = ctk.CTkComboBox(prow, height=34, font=font(13), dropdown_font=font(13), values=[])
+        ctk.CTkLabel(prow, text="프리셋", font=font(13, "bold"), text_color=TEXT).pack(side="left", padx=(2, 8))
+        self.preset_combo = ctk.CTkComboBox(prow, height=34, font=font(13), dropdown_font=font(13), values=[],
+                                            state="readonly", command=self._on_preset_pick)
         self.preset_combo.pack(side="left", fill="x", expand=True)
-        self.preset_combo.set("")
-        for text, cmd in (("저장", self._save_preset), ("불러오기", self._load_preset), ("삭제", self._delete_preset)):
-            b = secondary_button(prow, text, cmd, width=72 if text != "불러오기" else 84)
-            b.configure(height=34)
-            b.pack(side="left", padx=(6, 0))
+        self._preset_current = ""  # 지금 적용된 프리셋 (적용을 취소하면 콤보를 이 값으로 되돌림)
+        self._show_preset("")
+        b = secondary_button(prow, "프리셋으로 저장", self._save_preset, width=116)
+        b.configure(height=34)
+        b.pack(side="left", padx=(6, 0))
+        b = secondary_button(prow, "삭제", self._delete_preset, width=60)
+        b.configure(height=34, text_color=DANGER)
+        b.pack(side="left", padx=(6, 0))
 
         # 순서 목록
         self.list_zone = ctk.CTkFrame(oc, fg_color=SUBTLE, corner_radius=10, border_width=1, border_color=BORDER)
@@ -1049,6 +1055,7 @@ class App(ctk.CTk):
         if self.items and messagebox.askyesno("전체 비우기", "순서 목록을 모두 비울까요?", parent=self):
             self.items.clear()
             self._render_list()
+            self._show_preset("")
 
     # ================================================================ 좌측: 파일 / 폴더 / 성경
     def _refresh_files(self):
@@ -1068,7 +1075,7 @@ class App(ctk.CTk):
         if self._shown_files:
             self.file_empty.place_forget()
         else:
-            self.file_empty.configure(text="PPT 파일이 없습니다.\n아래 [불러오기]로 PPT 를 넣어 주세요." if not q
+            self.file_empty.configure(text="PPT 파일이 없습니다.\n아래 [PPT 추가]로 넣어 주세요." if not q
                                       else "검색 결과가 없습니다.")
             self.file_empty.place(relx=0.5, rely=0.5, anchor="center")
 
@@ -1112,7 +1119,7 @@ class App(ctk.CTk):
 
     def _import_templates(self):
         """다른 곳의 PPT 를 템플릿 폴더로 복사해 목록에 추가 (원본은 그대로)."""
-        paths = filedialog.askopenfilenames(parent=self, title="템플릿으로 불러올 PPT 선택",
+        paths = filedialog.askopenfilenames(parent=self, title="템플릿 폴더에 추가할 PPT 선택 (복사됨)",
                                             filetypes=[("PowerPoint", "*.pptx *.pptm *.ppt"), ("모든 파일", "*.*")])
         if not paths:
             return
@@ -1120,7 +1127,7 @@ class App(ctk.CTk):
         try:
             tdir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            messagebox.showerror("불러오기", f"템플릿 폴더를 만들 수 없습니다:\n{tdir}\n\n{e}", parent=self)
+            messagebox.showerror("PPT 추가", f"템플릿 폴더를 만들 수 없습니다:\n{tdir}\n\n{e}", parent=self)
             return
         added, errors = [], []
         for raw in paths:
@@ -1135,7 +1142,7 @@ class App(ctk.CTk):
                 errors.append(f"{src.name}: 템플릿 폴더의 같은 이름이 바로 가기(링크)입니다")
                 continue
             if dest.exists() and not messagebox.askyesno(
-                    "불러오기", f"템플릿 폴더에 '{src.name}' 이 이미 있습니다. 덮어쓸까요?", parent=self):
+                    "PPT 추가", f"템플릿 폴더에 '{src.name}' 이 이미 있습니다. 덮어쓸까요?", parent=self):
                 continue
             try:
                 shutil.copy2(src, dest)
@@ -1145,9 +1152,9 @@ class App(ctk.CTk):
         self._refresh_files()
         if added:
             self._select_file(added[-1])
-            self._set_status(f"템플릿 {len(added)}개를 불러왔습니다: {', '.join(added)}")
+            self._set_status(f"템플릿 {len(added)}개를 추가했습니다: {', '.join(added)}")
         if errors:
-            messagebox.showerror("불러오기", "다음 파일을 불러오지 못했습니다:\n\n" + "\n".join(errors), parent=self)
+            messagebox.showerror("PPT 추가", "다음 파일을 불러오지 못했습니다:\n\n" + "\n".join(errors), parent=self)
 
     def _open_selected_template(self):
         if (path := self._selected_template()) is not None:
@@ -1379,59 +1386,70 @@ class App(ctk.CTk):
     def _refresh_presets(self):
         self.preset_combo.configure(values=self.presets.names())
 
-    def _save_preset(self):
-        name = self.preset_combo.get().strip()
-        err = self.presets.validate_name(name)
-        if err:
-            messagebox.showerror("프리셋 저장", err, parent=self)
+    def _show_preset(self, name: str):
+        """콤보에 지금 프리셋 표시 (없으면 안내 문구)."""
+        self._preset_current = name
+        self.preset_combo.set(name or PRESET_PLACEHOLDER)
+
+    def _on_preset_pick(self, name: str):
+        """목록에서 고르면 바로 적용 (지금 순서가 있으면 확인)."""
+        if not self.presets.exists(name):
+            self._show_preset(self._preset_current)
             return
+        if self.items and not messagebox.askyesno("프리셋", f"현재 순서를 '{name}' 프리셋으로 바꿀까요?", parent=self):
+            self._show_preset(self._preset_current)
+            return
+        self._apply_preset(name)
+
+    def _save_preset(self):
         if not self.items:
-            messagebox.showerror("프리셋 저장", "저장할 예배 순서가 없습니다.", parent=self)
+            messagebox.showerror("프리셋으로 저장", "저장할 예배 순서가 없습니다.", parent=self)
             return
         fmt = self._filename_format()
         err = validate_filename_format(fmt)
         if err:
-            messagebox.showerror("프리셋 저장", err + "\n(⚙ 설정 → 결과 파일 이름)", parent=self)
+            messagebox.showerror("프리셋으로 저장", err + "\n(⚙ 설정 → 결과 파일 이름)", parent=self)
+            return
+        initial = self._preset_current or self.worship_entry.get().strip()[:MAX_PRESET_NAME]
+        name = TextPrompt(self, "프리셋으로 저장", "프리셋 이름", initial,
+                          hint=f"지금 순서와 파일 이름 형식을 저장합니다 (이름 {MAX_PRESET_NAME}글자 이내, 최대 {MAX_PRESETS}개).\n"
+                               "같은 이름이 있으면 덮어쓸지 묻습니다.",
+                          validate=self.presets.validate_name).show()
+        if not name:
             return
         if self.presets.exists(name):
-            if not messagebox.askyesno("프리셋 저장", f"'{name}' 프리셋이 이미 있습니다. 덮어쓸까요?", parent=self):
+            if not messagebox.askyesno("프리셋으로 저장", f"'{name}' 프리셋이 이미 있습니다. 덮어쓸까요?", parent=self):
                 return
         elif not self.presets.can_add(name):
-            messagebox.showerror("프리셋 저장", f"프리셋은 최대 {MAX_PRESETS}개까지 저장할 수 있습니다.\n"
-                                            "기존 프리셋을 삭제한 뒤 다시 시도해 주세요.", parent=self)
+            messagebox.showerror("프리셋으로 저장", f"프리셋은 최대 {MAX_PRESETS}개까지 저장할 수 있습니다.\n"
+                                              "기존 프리셋을 삭제한 뒤 다시 시도해 주세요.", parent=self)
             return
         try:
             self.presets.upsert(name, self.items, fmt)
         except OSError as e:
-            messagebox.showerror("프리셋 저장", f"{SAVE_ERROR_HINT}\n\n{e}", parent=self)
+            messagebox.showerror("프리셋으로 저장", f"{SAVE_ERROR_HINT}\n\n{e}", parent=self)
             return
         self._refresh_presets()
-        self.preset_combo.set(name)
+        self._show_preset(name)
         self._set_status(f"프리셋 '{name}' 저장됨 ({len(self.presets.presets)}/{MAX_PRESETS})")
 
-    def _load_preset(self):
-        name = self.preset_combo.get().strip()
-        if not self.presets.exists(name):
-            messagebox.showerror("프리셋 불러오기", "불러올 프리셋을 목록에서 선택해 주세요.", parent=self)
-            return
-        if self.items and not messagebox.askyesno("프리셋 불러오기",
-                                                  f"현재 순서를 '{name}' 프리셋으로 바꿀까요?", parent=self):
-            return
+    def _apply_preset(self, name: str):
         self.items = self.presets.load(name)
         self.worship_entry.delete(0, "end")
         self.worship_entry.insert(0, name)
         self._set_filename_format(self.presets.filename_format(name))
         self._save_basic()
         self._render_list()
+        self._show_preset(name)
         self._set_status(f"프리셋 '{name}' 불러옴")
 
     def _delete_preset(self):
-        name = self.preset_combo.get().strip()
+        name = self._preset_current
         if not self.presets.exists(name):
-            messagebox.showerror("프리셋 삭제", "삭제할 프리셋을 목록에서 선택해 주세요.", parent=self)
+            messagebox.showerror("프리셋 삭제", "삭제할 프리셋을 목록에서 먼저 골라 주세요.", parent=self)
             return
-        if not messagebox.askyesno("프리셋 삭제", f"'{name}' 프리셋을 삭제할까요?\n이 작업은 되돌릴 수 없습니다.",
-                                   icon="warning", parent=self):
+        if not messagebox.askyesno("프리셋 삭제", f"'{name}' 프리셋을 삭제할까요?\n이 작업은 되돌릴 수 없습니다.\n"
+                                   "(지금 순서 목록은 그대로 둡니다)", icon="warning", parent=self):
             return
         try:
             self.presets.delete(name)
@@ -1439,8 +1457,16 @@ class App(ctk.CTk):
             messagebox.showerror("프리셋 삭제", f"{SAVE_ERROR_HINT}\n\n{e}", parent=self)
             return
         self._refresh_presets()
-        self.preset_combo.set("")
+        self._show_preset("")
         self._set_status(f"프리셋 '{name}' 삭제됨")
+
+    def _open_order_file_menu(self):
+        """[순서 파일 ▾] → 텍스트 파일에서 순서 불러오기 / 순서를 파일로 내보내기."""
+        menu = tk.Menu(self, tearoff=0, font=tk_font(self, 12))
+        menu.add_command(label="파일에서 순서 불러오기…", command=self._import_worship_file)
+        menu.add_command(label="순서를 파일로 내보내기…", command=self._export_worship_file)
+        btn = self.order_file_btn
+        menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
 
     def _import_worship_file(self):
         """외부 텍스트 파일에서 예배 순서를 불러옴."""
@@ -1458,7 +1484,7 @@ class App(ctk.CTk):
                 messagebox.showwarning("불러오기 실패", "유효한 예배 순서 항목이 파일에 없습니다.", parent=self)
                 return
 
-            if self.items and not messagebox.askyesno("불러오기", "현재 순서를 파일 내용으로 대체할까요?\n'아니오'를 누르면 아래에 추가됩니다.", parent=self):
+            if self.items and not messagebox.askyesno("순서 파일 불러오기", "현재 순서를 파일 내용으로 대체할까요?\n'아니오'를 누르면 아래에 추가됩니다.", parent=self):
                 self.items = self.items + items
             else:
                 self.items = items
@@ -1479,6 +1505,7 @@ class App(ctk.CTk):
 
             self._save_basic()
             self._render_list()
+            self._show_preset("")
             self._set_status(f"파일에서 {len(items)}개 항목을 불러왔습니다.")
 
         except Exception as e:

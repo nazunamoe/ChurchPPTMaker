@@ -619,6 +619,43 @@ class BibleField(ctk.CTkFrame):
 
 
 # ---------------------------------------------------------------- 항목 입력 다이얼로그
+class TextPrompt(_Modal):
+    """이름 하나 입력 (예: 프리셋으로 저장). validate(값) → 오류 메시지(없으면 None). 결과 = 앞뒤 공백을 뗀 값."""
+
+    def __init__(self, master, title: str, label: str, initial: str = "", hint: str = "",
+                 validate: Callable[[str], str | None] | None = None):
+        super().__init__(master, title)
+        self._validate = validate
+        self._prompt_title = title
+        body = card(self)
+        body.pack(fill="both", expand=True, padx=16, pady=(16, 8))
+        ctk.CTkLabel(body, text=label, font=font(13), text_color=TEXT, anchor="w").grid(
+            row=0, column=0, padx=16, pady=(14, 6), sticky="w")
+        self.entry = ctk.CTkEntry(body, width=260, font=font(13))
+        self.entry.insert(0, initial)
+        self.entry.grid(row=0, column=1, padx=(0, 16), pady=(14, 6), sticky="w")
+        if hint:
+            ctk.CTkLabel(body, text=hint, font=font(11), text_color=TEXT2, anchor="w", justify="left").grid(
+                row=1, column=0, columnspan=2, padx=16, pady=(0, 12), sticky="w")
+        btns = ctk.CTkFrame(self, fg_color="transparent")
+        btns.pack(fill="x", padx=16, pady=(4, 16))
+        accent_button(btns, "확인", self._ok, width=96).pack(side="right")
+        secondary_button(btns, "취소", self.destroy, width=96).pack(side="right", padx=8)
+        self.bind_return(self._ok)
+
+    def on_shown(self):
+        self.entry.focus_set()
+        self.entry.select_range(0, "end")
+
+    def _ok(self):
+        value = self.entry.get().strip()
+        if self._validate is not None and (err := self._validate(value)):
+            messagebox.showerror(self._prompt_title, err, parent=self)
+            return
+        self.result = value
+        self.destroy()
+
+
 class _SearchList:
     """다이얼로그 안의 [검색칸] + 목록 (CCM 곡·사용자 지정 템플릿 고르기). 공백 AND·초성 검색(search_names).
     항목이 수백 개일 수 있어 CTk 위젯 대신 tk.Listbox 하나로 그림 (BiblePicker 와 같은 이유).
