@@ -8,6 +8,7 @@ import ctypes
 import datetime as dt
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -40,7 +41,8 @@ from worship_builder import (PPT_EXTS, BuildError, _has_reparse_point, BuildRequ
 
 APP_TITLE = f"{APP_NAME} v{__version__}"
 DATE_FMT = "%Y-%m-%d"
-SLIDE_SIZE_LABELS = {"원본": "original", "16:9": "16:9", "4:3": "4:3"}  # 화면 표시 → config.ppt.slide_size
+BUILD_LABEL = "예배 PPT 병합 및 생성"
+PREVIEW_LABEL = "미리 보기 (저장 안 함)"
 MIN_FILE_ROWS = 4  # 최소 창 크기에서도 템플릿 파일 목록이 이만큼은 보이도록
 PRESET_PLACEHOLDER = "— 프리셋을 고르면 바로 적용 —"  # 프리셋 콤보에 아무것도 적용 안 됐을 때
 MIN_ORDER_LIST_H = 340  # 최소 창 크기에서 순서 목록 높이 (논리 단위, 순서 7줄)
@@ -433,7 +435,7 @@ class App(ctk.CTk):
         self.cal_btn = secondary_button(line1, "📅", self._open_calendar, width=36)
         self.cal_btn.configure(height=34)
         self.cal_btn.pack(side="left", padx=(4, 4))
-        secondary_button(line1, "금일 지정", self._set_today, width=80).pack(side="left")
+        secondary_button(line1, "오늘", self._set_today, width=56).pack(side="left")
 
         label(line1, "예배 종류").pack(side="left", padx=(28, 8))
         self.worship_entry = ctk.CTkEntry(line1, width=192, height=34, font=font(13), placeholder_text="예: 주일오전예배")
@@ -464,16 +466,20 @@ class App(ctk.CTk):
     def _update_filename_preview(self):
         fmt = self._filename_format()
         err = validate_filename_format(fmt)
+        date, church, worship = (self.date_entry.get().strip(), self.church_entry.get().strip(),
+                                 self.worship_entry.get().strip())
+        # 비어 있으면 생성도 막히므로, 밑줄이 겹친 이상한 이름 대신 무엇을 넣으면 되는지 보여 줌
+        missing = [name for name, v in (("교회 이름", church), ("예배 종류", worship)) if not v]
         if err:
             self._preview_text = ("⚠ 파일 이름 형식: " + err.splitlines()[0] + " — ⚙ 설정에서 고쳐 주세요", DANGER)
+        elif missing:
+            josa = "를" if missing[-1] == "예배 종류" else "을"  # 종류(모음) → 를, 이름(받침) → 을
+            self._preview_text = (f"→  {'·'.join(missing)}{josa} 입력하면 저장될 파일 이름이 여기에 표시됩니다", TEXT2)
+        elif not re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", date):
+            self._preview_text = ("→  날짜를 YYYY-MM-DD 로 입력하면 저장될 파일 이름이 여기에 표시됩니다", TEXT2)
         else:
-            name = output_filename(self.date_entry.get().strip(), self.church_entry.get().strip(),
-                                   self.worship_entry.get().strip(), fmt)
-            temp = getattr(self, "temp_mode", None)
-            if temp is not None and temp.get():
-                self._preview_text = (f"→  임시 파일로 만들어 바로 엽니다 (저장 안 함): {name}", TEXT2)
-            else:
-                self._preview_text = (f"→  저장: {self.cfg.resolve_path('output_dir') / name}", TEXT2)
+            name = output_filename(date, church, worship, fmt)
+            self._preview_text = (f"→  저장: {self.cfg.resolve_path('output_dir') / name}", TEXT2)
         self._fit_filename_preview()
 
     def _fit_filename_preview(self):
@@ -641,64 +647,25 @@ class App(ctk.CTk):
             row=0, column=1, padx=(0, 8), pady=(12, 2), sticky="s")
         secondary_button(bar, "임시 파일", self._show_temp_files, width=76, height=30).grid(
             row=1, column=1, padx=(0, 8), pady=(2, 12), sticky="n")
+        # 결과를 어떻게 열지 (위아래로) — 슬라이드 비율은 한 번 정하면 거의 안 바꾸므로 ⚙ 설정 → PPT 병합으로 옮김
         self.open_after = ctk.BooleanVar(value=bool(self.cfg.get("ppt", "open_after_build")))
         self.slideshow = ctk.BooleanVar(value=bool(self.cfg.get("ppt", "start_slideshow")))
-        self.temp_mode = ctk.BooleanVar(value=bool(self.cfg.get("ppt", "temp_mode")))
         self.open_after_cb = ctk.CTkCheckBox(
             bar, text="생성 후 열기", variable=self.open_after, font=font(12), checkbox_width=20,
-            checkbox_height=20, fg_color=ACCENT, command=self._on_open_after)
-        self.open_after_cb.grid(row=0, column=2, padx=8, pady=(12, 4), sticky="w")
+            checkbox_height=20, fg_color=ACCENT,
+            command=lambda: self.cfg.set("ppt", "open_after_build", self.open_after.get()))
+        self.open_after_cb.grid(row=0, column=2, padx=8, pady=(12, 2), sticky="sw")
         self.slideshow_cb = ctk.CTkCheckBox(
-            bar, text="슬라이드 쇼로 시작", variable=self.slideshow, font=font(12), checkbox_width=20,
+            bar, text="열 때 슬라이드 쇼로 시작", variable=self.slideshow, font=font(12), checkbox_width=20,
             checkbox_height=20, fg_color=ACCENT,
             command=lambda: self.cfg.set("ppt", "start_slideshow", self.slideshow.get()))
-        self.slideshow_cb.grid(row=0, column=3, padx=8, pady=(12, 4), sticky="w")
-        # 두 체크박스 아래: 결과 슬라이드 비율 (원본 = 첫 PPT 크기)
-        size_row = ctk.CTkFrame(bar, fg_color="transparent")
-        size_row.grid(row=1, column=2, columnspan=2, padx=8, pady=(4, 12), sticky="w")
-        ctk.CTkLabel(size_row, text="슬라이드 비율", font=font(12), text_color=TEXT).pack(side="left", padx=(0, 8))
-        self.size_seg = ctk.CTkSegmentedButton(size_row, values=list(SLIDE_SIZE_LABELS), font=font(12), height=28,
-                                               selected_color=ACCENT, command=self._set_slide_size)
-        cur = self.cfg.get("ppt", "slide_size")
-        self.size_seg.set(next((k for k, v in SLIDE_SIZE_LABELS.items() if v == cur), "원본"))
-        self.size_seg.pack(side="left")
-        self.build_btn = accent_button(bar, "예배 PPT 병합 및 생성", self._build, width=220, height=42,
-                                       font=font(15, "bold"))
+        self.slideshow_cb.grid(row=1, column=2, padx=8, pady=(2, 12), sticky="nw")
+        self.build_btn = accent_button(bar, BUILD_LABEL, self._build, width=220, height=42, font=font(15, "bold"))
         self.build_btn.grid(row=0, column=4, padx=(8, 16), pady=(12, 2), sticky="s")
-        # 생성 버튼 아래: 저장 없이 임시 폴더에 만들어 바로 실행 (최근 ppt.temp_keep 개 보관).
-        # 버튼 열(220)에 두어 하단 바가 넓어지지 않게 함 — 옆 열에 두면 상태 표시 칸이 약 2/3 로 줄었음
-        ctk.CTkCheckBox(bar, text="저장 없이 임시 파일로 실행", variable=self.temp_mode, font=font(12), checkbox_width=18,
-                        checkbox_height=18, fg_color=ACCENT, command=self._on_temp_mode).grid(
-            row=1, column=4, padx=(8, 16), pady=(2, 10), sticky="n")
-        self._on_temp_mode(save=False)  # 생성 버튼 글자·'생성 후 열기' 상태 맞춤
-
-    def _set_slide_size(self, label: str):
-        self.cfg.set("ppt", "slide_size", SLIDE_SIZE_LABELS[label])
-        self._set_status("슬라이드 비율: " + ("첫 PPT 크기 그대로" if label == "원본" else label))
-
-    def _on_open_after(self, save: bool = True):
-        """'슬라이드 쇼로 시작'은 결과를 열 때('생성 후 열기' 또는 임시 실행)만 선택 가능."""
-        if save:
-            self.cfg.set("ppt", "open_after_build", self.open_after.get())
-        opens = self.open_after.get() or self.temp_mode.get()
-        self.slideshow_cb.configure(state="normal" if opens else "disabled")
-
-    def _on_temp_mode(self, save: bool = True):
-        """임시 실행은 항상 바로 열므로 '생성 후 열기'는 의미가 없어 잠그고, 생성 버튼 글자로 모드를 알린다."""
-        temp = self.temp_mode.get()
-        if save:
-            self.cfg.set("ppt", "temp_mode", temp)
-            self._set_status("임시 실행: 저장하지 않고 임시 파일로 만들어 바로 엽니다." if temp
-                             else "생성하면 출력 폴더에 저장합니다.")
-        self.open_after_cb.configure(state="disabled" if temp else "normal")
-        if not self.building:
-            self.build_btn.configure(text=self._build_label())
-        self._on_open_after(save=False)
-        if hasattr(self, "filename_preview"):
-            self._update_filename_preview()  # 저장 위치 대신 '임시 파일로 실행' 안내
-
-    def _build_label(self) -> str:
-        return "예배 PPT 임시 생성 및 실행" if self.temp_mode.get() else "예배 PPT 병합 및 생성"
+        # 생성 버튼 아래: 저장하지 않고 임시 파일로 만들어 바로 열기 (최근 ppt.temp_keep 개 보관, [임시 파일]에서 다시 열기·저장).
+        # 예전에는 '저장 없이 임시 파일로 실행' 체크박스라 켜 둔 채 잊으면 [생성]이 저장을 안 했음 → 따로 누르는 버튼으로
+        self.preview_btn = secondary_button(bar, PREVIEW_LABEL, lambda: self._build(temp=True), width=220, height=30)
+        self.preview_btn.grid(row=1, column=4, padx=(8, 16), pady=(4, 12), sticky="n")
 
     # ================================================================ 순서 목록 렌더링
     def _render_list(self):
@@ -749,7 +716,7 @@ class App(ctk.CTk):
         tools.grid(row=0, column=4, padx=(scaled(self, 8), 0))
         hover = mode_color(BTN_HOVER)
         # [열기] = 원본 PPT (예전에는 알약 더블클릭이라 안내 없이는 몰랐고, 한 번 클릭의 수정 창이 더블클릭 간격만큼 늦었음)
-        for text, cmd, color in (("열기", lambda i=idx: self._open_item(i), ACCENT),
+        for text, cmd, color in (("열기", lambda i=idx: self._open_item(i), TEXT),
                                  ("▲", lambda i=idx: self._move_item(i, -1), TEXT2),
                                  ("▼", lambda i=idx: self._move_item(i, 1), TEXT2),
                                  ("✕", lambda i=idx: self._remove_item(i), DANGER)):
@@ -1539,7 +1506,8 @@ class App(ctk.CTk):
             messagebox.showerror("내보내기 오류", f"파일을 저장하는 중 오류가 발생했습니다:\n{e}", parent=self)
 
     # ================================================================ 생성
-    def _build(self):
+    def _build(self, temp: bool = False):
+        """temp: [미리 보기 (저장 안 함)] — 출력 폴더 대신 임시 폴더에 만들고 항상 바로 연다."""
         if self.building:
             return
         if self._bible_preview:  # Bible2PPT 와 병합이 동시에 PowerPoint 를 쓰지 않도록
@@ -1583,10 +1551,9 @@ class App(ctk.CTk):
         if problems:
             messagebox.showerror("파일을 찾을 수 없습니다", "\n".join(problems), parent=self)
             return
-        temp = self.temp_mode.get()  # 생성 중에 체크를 바꿔도 이번 생성은 시작할 때의 모드로
         out = self.cfg.resolve_path("output_dir") / output_filename(date, church, worship, fmt)
         if temp and (err := temp_dir_conflict(self.cfg)) is not None:
-            messagebox.showerror("임시 실행을 할 수 없습니다", err, parent=self)
+            messagebox.showerror("미리 보기를 만들 수 없습니다", err, parent=self)
             return
         if not temp:  # 임시 실행은 매번 새 이름(_시분초)으로 임시 폴더에 만들므로 덮어쓰기 확인이 필요 없음
             if (err := output_conflict(self.cfg, out)) is not None:
@@ -1600,9 +1567,10 @@ class App(ctk.CTk):
         self._build_cancelled = False
         # 생성 전부터 켜져 있던 PowerPoint(사용자 것)는 멈춰도 강제로 끄지 않는다 — 그 뒤에 켜진 것만 [생성 중단] 대상
         self._ppt_before = powerpoint_pids()
-        self.build_btn.configure(state="disabled", text="생성 중…")
+        self.build_btn.configure(state="disabled", text="미리 보기 만드는 중…" if temp else "생성 중…")
+        self.preview_btn.configure(state="disabled")
         self.log_lines.clear()
-        self._log(f"생성 시작: {out.stem} (임시 실행 — 저장하지 않음)" if temp else f"생성 시작: {out.name}")
+        self._log(f"미리 보기 시작: {out.stem} (저장하지 않음)" if temp else f"생성 시작: {out.name}")
         self._set_progress(0, "준비 중…")
         items = [ServiceItem.from_dict(i.to_dict()) for i in self.items]  # 작업 중 UI 변경과 분리
         # 열기·쇼 여부도 시작할 때 정함: 병합에 쓴 PowerPoint 에서 결과를 바로 보여 주므로(끄고 다시 켜지 않음) 빠름
@@ -1614,7 +1582,8 @@ class App(ctk.CTk):
         def done(result, err):
             self.building = False
             self._hide_build_overlay()
-            self.build_btn.configure(state="normal", text=self._build_label())
+            self.build_btn.configure(state="normal", text=BUILD_LABEL)
+            self.preview_btn.configure(state="normal")
             if err and self._build_cancelled:
                 self._set_progress(0, "생성을 중단했습니다")
                 self._log(f"생성 중단 (PowerPoint 강제 종료): {err}")
@@ -1627,8 +1596,8 @@ class App(ctk.CTk):
                 return
             warns = [l for l in self.log_lines if "⚠" in l]
             warn_text = f"⚠ 경고 {len(warns)}건 — [로그]에서 확인" if warns else ""
-            if temp:  # 임시 실행: 항상 바로 열기. 나중에 [임시 파일]에서 다시 열거나 저장
-                self._set_progress(1, f"임시 실행: {result.stem}", "  ·  ".join(
+            if temp:  # 미리 보기: 항상 바로 열기. 나중에 [임시 파일]에서 다시 열거나 저장
+                self._set_progress(1, f"미리 보기: {result.stem}", "  ·  ".join(
                     x for x in ("저장하려면 [임시 파일]에서 다른 이름으로 저장", warn_text) if x))
                 if not req.opened:
                     self._open_result(result, req.open_mode == "show")

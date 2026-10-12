@@ -27,6 +27,7 @@ from worship_builder import (PPT_EXTS, count_ppt_files, folder_conflict, output_
                              validate_filename_format)
 
 APPEARANCE_MODES = {"라이트": "Light", "다크": "Dark", "시스템": "System"}  # 화면 표시 → config.appearance_mode
+SLIDE_SIZE_LABELS = {"원본": "original", "16:9": "16:9", "4:3": "4:3"}  # 화면 표시 → config.ppt.slide_size
 SETTINGS_FOLDERS = (  # (설정 키, 이름) — ⚙ 설정의 '폴더' (설정 마법사는 WIZARD_FOLDERS)
     ("template_dir", "템플릿"), ("prayer_dir", "기도"), ("hymn_dir", "찬송가"), ("ccm_dir", "CCM"),
     ("output_dir", "출력 (결과 저장)"),
@@ -1171,6 +1172,14 @@ class SettingsDialog(_BibleListMixin, _Modal):
         self.merge_mode.set(next((k for k, v in MERGE_MODES.items() if v == p.get("merge_mode")),
                                  next(iter(MERGE_MODES))))
         row("병합 방식", self.merge_mode)
+        # 결과 슬라이드 비율 (원본 = 첫 PPT 크기). 예전에는 메인 하단 생성 버튼 옆 — 한 번 정하면 거의 안 바꿔서 여기로
+        self.size_seg = ctk.CTkSegmentedButton(body, values=list(SLIDE_SIZE_LABELS), font=font(12), height=30,
+                                               selected_color=ACCENT)
+        self.size_seg.set(next((k for k, v in SLIDE_SIZE_LABELS.items() if v == p.get("slide_size")), "원본"))
+        row("슬라이드 비율", self.size_seg)
+        ctk.CTkLabel(body, text="원본 = 첫 번째 순서 PPT 크기. 16:9·4:3 을 고르면 모든 슬라이드를 그 비율로 맞춥니다 (내용은 잘리지 않음).",
+                     font=font(11), text_color=TEXT2, anchor="w").grid(row=r, column=1, columnspan=2, sticky="w", pady=(0, 6))
+        r += 1
 
         section("텍스트 입력 규칙")
 
@@ -1242,7 +1251,7 @@ class SettingsDialog(_BibleListMixin, _Modal):
         section("임시 파일")
         self.temp_keep = entry(str(clean_temp_keep(p.get("temp_keep"))), width=80)
         row("최대 보관 개수", self.temp_keep)
-        ctk.CTkLabel(body, text=f"[저장 없이 임시 파일로 실행]으로 만든 PPT 를 최근 것부터 이만큼 보관합니다 (1~{TEMP_KEEP_MAX}).\n"
+        ctk.CTkLabel(body, text=f"[미리 보기 (저장 안 함)]로 만든 PPT 를 최근 것부터 이만큼 보관합니다 (1~{TEMP_KEEP_MAX}).\n"
                                 "넘으면 오래된 것부터 지웁니다. 하단 [임시 파일]에서 다시 열거나 저장할 수 있습니다.",
                      font=font(11), text_color=TEXT2, anchor="w", justify="left").grid(
             row=r, column=1, columnspan=2, sticky="w", pady=(0, 14))
@@ -1427,7 +1436,8 @@ class SettingsDialog(_BibleListMixin, _Modal):
         p = self.cfg.get("ppt")
         p.update(text_placeholder=self.placeholder.get().strip(), text_shape_name=self.shape_name.get().strip(),
                  fill_defaults=[e.get().strip() for e in self.fill_defaults],
-                 merge_mode=MERGE_MODES[self.merge_mode.get()], temp_keep=int(keep_raw))
+                 merge_mode=MERGE_MODES[self.merge_mode.get()], temp_keep=int(keep_raw),
+                 slide_size=SLIDE_SIZE_LABELS.get(self.size_seg.get(), "original"))
         self.cfg.save()
         self.result = True
         self.destroy()
@@ -1792,7 +1802,7 @@ class SetupWizard(_BibleListMixin, _Modal):
 
 # ---------------------------------------------------------------- 로그
 class TempFilesDialog(_Modal):
-    """[저장 없이 임시 파일로 실행]으로 만든 PPT 목록 (최근 것부터). 열기·쇼 시작·다른 이름으로 저장·폴더 열기.
+    """[미리 보기 (저장 안 함)]로 만든 PPT 목록 (최근 것부터). 열기·쇼 시작·다른 이름으로 저장·폴더 열기.
     실제 동작은 App 콜백(path → 성공 여부)이 하고, 성공하면 창을 닫는다. 목록은 tk.Listbox 하나 (CCM 선택과 같은 이유)."""
     ROWS = 10
 
@@ -1820,7 +1830,7 @@ class TempFilesDialog(_Modal):
             self.listbox.activate(0)
             info = f"{len(self.files)}개 · 최근 {keep}개까지 보관 (⚙ 설정에서 변경)   ·   더블클릭 또는 Enter 로 열기"
         else:
-            info = "임시 파일이 없습니다. 하단 [저장 없이 임시 파일로 실행]을 켜고 생성하면 여기에 쌓입니다."
+            info = "임시 파일이 없습니다. 하단 [미리 보기 (저장 안 함)]로 만들면 여기에 쌓입니다."
         ctk.CTkLabel(body, text=info, font=font(11), text_color=TEXT2, anchor="w").pack(
             fill="x", padx=14, pady=(0, 10))
         self.listbox.bind("<Double-Button-1>", lambda e: self._run("open"))

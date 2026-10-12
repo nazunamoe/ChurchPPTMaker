@@ -58,7 +58,6 @@ DEFAULT_CONFIG: dict = {
         "start_slideshow": False,  # 생성 후 열 때 바로 슬라이드 쇼로 시작
         "merge_mode": "source_formatting",  # source_formatting | windowless
         "slide_size": "original",  # 결과 슬라이드 비율: original(첫 PPT 크기) | 16:9 | 4:3
-        "temp_mode": False,  # 저장 없이 임시 파일로 만들어 바로 실행 (worship_builder.temp_result_dir)
         "temp_keep": 10,  # 임시 파일 최대 보관 개수 (1~100, 넘으면 오래된 것부터 삭제)
     },
 }
