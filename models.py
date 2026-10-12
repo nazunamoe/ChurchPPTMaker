@@ -13,6 +13,7 @@ KIND_SERMON = "sermon"   # 설교.pptx 호출 + 설교 제목({{내용1}})·설�
 KIND_CCM = "ccm"         # CCM 폴더에서 검색해 고른 파일 (value = CCM 폴더 기준 상대 경로)
 
 MAX_FILL = 3             # 항목당 텍스트 입력칸 수 ({{내용1}} ~ {{내용3}})
+MAX_IMPORT_LINE = 2000   # 텍스트 파일 불러오기에서 한 줄 최대 글자 수 (다른 사람이 준 파일의 아주 긴 줄은 화면이 멈추게 함)
 CUSTOM_TEXT_KEYS = {2: "text2", 3: "text3"}  # 사용자 지정 항목의 {{내용2}}·{{내용3}} 값 (options 키). 1번은 value
 BIBLE_KEYS = ("bible", "bible2")  # 말씀 항목의 역본1·역본2 (options 키). 역본2 는 Bible2PPT 에서 나란히 배치
 
@@ -103,10 +104,19 @@ def hymn_number(value: str) -> int | None:
     return int(m.group()) if m else None
 
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def _one_line(text) -> str:
+    """입력칸에 붙여 넣은 줄 바꿈·탭 등 제어 문자 → 공백 (텍스트 파일 내보내기의 한 줄 = 한 항목 형식이 깨지지 않게)."""
+    return _CONTROL.sub(" ", str(text)).strip()
+
+
 def make_item(kind: str, label: str, value: str, options: dict | None = None) -> ServiceItem:
     """UI 다이얼로그 입력값으로 항목 생성. 검증은 validate_item 에서."""
-    label = label.strip()
-    value = value.strip()
+    label = _one_line(label)
+    value = _one_line(value)
+    options = {k: _one_line(v) for k, v in (options or {}).items()}
     if kind == KIND_PRAYER:
         label = label or KIND_LABELS[KIND_PRAYER]  # 기도 템플릿 이름 (합심기도, 중보기도 …)
     elif kind == KIND_HYMN:
@@ -163,14 +173,38 @@ def validate_item(item: ServiceItem) -> str | None:
     return None
 
 
+def _esc(text: str) -> str:
+    r"""내보내기 칸 구분자 '|' 가 값(설교 제목 등) 안에 있으면 '\|' 로 (불러올 때 칸이 밀리지 않게). '\' 는 '\\'."""
+    return text.replace("\\", "\\\\").replace("|", "\\|")
+
+
+def _split_fields(text: str) -> list[str]:
+    r"""'|' 로 칸 나누기 ('\|'·'\\' 는 글자). 그 외 '\' 는 글자 그대로 (escape 이전에 내보낸 파일 호환)."""
+    parts, cur, i = [], [], 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and i + 1 < len(text) and text[i + 1] in "|\\":
+            cur.append(text[i + 1])
+            i += 2
+            continue
+        if c == "|":
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    parts.append("".join(cur))
+    return parts
+
+
 def export_to_text(items: list[ServiceItem], church_name: str = "", worship_type: str = "", date_str: str = "",
                    filename_format: str = "") -> str:
     """예배 순서를 텍스트 형식으로 변환."""
     lines = []
-    if church_name: lines.append(f"# 교회이름: {church_name}")
-    if worship_type: lines.append(f"# 예배종류: {worship_type}")
-    if date_str: lines.append(f"# 날짜: {date_str}")
-    if filename_format: lines.append(f"# 파일이름형식: {filename_format}")
+    for key, val in (("교회이름", church_name), ("예배종류", worship_type), ("날짜", date_str),
+                     ("파일이름형식", filename_format)):
+        if _one_line(val):
+            lines.append(f"# {key}: {_one_line(val)}")
     lines.append("")
 
     for item in items:
@@ -180,16 +214,16 @@ def export_to_text(items: list[ServiceItem], church_name: str = "", worship_type
             extra = [item.options.get(k, "") for k in BIBLE_KEYS]
             while extra and not extra[-1]:
                 extra.pop()
-            opt_str = "".join(f"|{v}" for v in extra)
+            opt_str = "".join(f"|{_esc(v)}" for v in extra)
         elif item.kind == KIND_SERMON:
-            opt_str = f"|{item.options.get('preacher', '')}"
+            opt_str = f"|{_esc(item.options.get('preacher', ''))}"
         elif item.kind == KIND_CUSTOM:
             extra = [item.options.get(k, "") for k in CUSTOM_TEXT_KEYS.values()]
             while extra and not extra[-1]:
                 extra.pop()
-            opt_str = "".join(f"|{v}" for v in extra)
+            opt_str = "".join(f"|{_esc(v)}" for v in extra)
 
-        lines.append(f"[{item.kind}]{item.label}|{item.value}{opt_str}")
+        lines.append(f"[{item.kind}]{_esc(item.label)}|{_esc(item.value)}{opt_str}")
 
     return "\n".join(lines)
 
@@ -201,7 +235,7 @@ def import_from_text(text: str) -> tuple[list[ServiceItem], dict[str, str]]:
 
     for line in text.splitlines():
         line = line.strip()
-        if not line: continue
+        if not line or len(line) > MAX_IMPORT_LINE: continue
 
         if line.startswith("#"):
             if ":" in line:
@@ -219,19 +253,20 @@ def import_from_text(text: str) -> tuple[list[ServiceItem], dict[str, str]]:
 
                 if kind not in KIND_LABELS:
                     kind = KIND_CUSTOM
-                parts = rest.split("|", 2)
+                parts = _split_fields(rest)
                 label = parts[0].strip()
                 value = parts[1].strip() if len(parts) > 1 else ""
+                extra = parts[2:]
 
                 opts = {}
-                if kind == KIND_BIBLE and len(parts) > 2:
-                    for k, v in zip(BIBLE_KEYS, parts[2].split("|")):
+                if kind == KIND_BIBLE:
+                    for k, v in zip(BIBLE_KEYS, extra):
                         if v.strip():
                             opts[k] = v.strip()
-                elif kind == KIND_SERMON and len(parts) > 2:
-                    opts["preacher"] = parts[2].strip()
-                elif kind == KIND_CUSTOM and len(parts) > 2:
-                    for k, v in zip(CUSTOM_TEXT_KEYS.values(), parts[2].split("|")):
+                elif kind == KIND_SERMON and extra:
+                    opts["preacher"] = "|".join(extra).strip()  # 예전 파일: 설교자 칸 뒤의 '|' 는 설교자 글자
+                elif kind == KIND_CUSTOM:
+                    for k, v in zip(CUSTOM_TEXT_KEYS.values(), extra):
                         opts[k] = v.strip()
 
                 # 기본 검증/정규화 적용 (검증 실패 항목은 건너뜀)
