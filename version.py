@@ -11,7 +11,7 @@ import re
 import sys
 from pathlib import Path
 
-__version__ = "1.0.8"
+__version__ = "1.0.9"
 
 APP_NAME = "예배 순서 PPT 제작 프로그램"
 EXE_NAME = "ChurchPPTMaker"
