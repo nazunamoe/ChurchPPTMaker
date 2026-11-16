@@ -313,6 +313,9 @@ class App(ctk.CTk):
         err = self.cfg.save_error or self.presets.save_error
         if err:  # 쓰기가 막힌 프로그램 폴더 — 저장되지 않는다는 것을 처음에 한 번 알림
             messagebox.showwarning("설정 저장 불가", f"{SAVE_ERROR_HINT}\n\n{err}", parent=self)
+        notices = [n for n in (self.cfg.load_notice, self.presets.load_notice) if n]
+        if notices:  # 손상된 설정·프리셋 파일을 기본값으로 바꿨음 — 왜 설정이 사라졌는지, 원래 파일이 어디 있는지 알림
+            messagebox.showwarning("설정 파일을 읽을 수 없음", "\n\n".join(notices), parent=self)
         if not self.cfg.get("setup_done"):  # 처음 실행: 창이 보인 뒤 설정 마법사
             self._open_setup_wizard()
 

@@ -43,12 +43,14 @@ class ServiceItem:
 
     @classmethod
     def from_dict(cls, data: dict) -> "ServiceItem":
+        """presets.json 등 외부에서 고칠 수 있는 값 → 항목. 글자가 아닌 값은 빈 값(숫자는 글자로), 제어 문자는 공백으로
+        (예전에는 kind 가 목록이면 TypeError 로 시작하자마자 꺼졌고, label 이 null 이면 'None' 이라는 이름이 됐음)."""
         kind = data.get("kind", KIND_CUSTOM)
-        if kind not in KIND_LABELS:
+        if not isinstance(kind, str) or kind not in KIND_LABELS:
             kind = KIND_CUSTOM
         opts = data.get("options")
-        opts = {str(k): v for k, v in opts.items() if isinstance(v, str)} if isinstance(opts, dict) else {}
-        return cls(kind=kind, label=str(data.get("label", "")), value=str(data.get("value", "")), options=opts)
+        opts = {str(k): _one_line(v) for k, v in opts.items() if isinstance(v, str)} if isinstance(opts, dict) else {}
+        return cls(kind=kind, label=_plain(data.get("label")), value=_plain(data.get("value")), options=opts)
 
     @property
     def display_value(self) -> str:
@@ -110,6 +112,13 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
 def _one_line(text) -> str:
     """입력칸에 붙여 넣은 줄 바꿈·탭 등 제어 문자 → 공백 (텍스트 파일 내보내기의 한 줄 = 한 항목 형식이 깨지지 않게)."""
     return _CONTROL.sub(" ", str(text)).strip()
+
+
+def _plain(value) -> str:
+    """외부 파일의 값 → 한 줄 글자. 글자·숫자만 인정 (null·목록·true 등은 빈 값)."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return ""
+    return _one_line(value)
 
 
 def make_item(kind: str, label: str, value: str, options: dict | None = None) -> ServiceItem:

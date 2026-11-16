@@ -142,26 +142,52 @@ SAVE_ERROR_HINT = ("프로그램 폴더에 쓸 수 없어 설정·프리셋이 �
                    "C:\\Program Files 처럼 쓰기가 막힌 곳이면 문서 폴더 등 다른 곳으로 프로그램을 옮겨 주세요.")
 
 
-def _read_json(path: Path):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return None
-    except (json.JSONDecodeError, OSError):
-        # 손상된 파일은 백업해 두고 기본값으로 재시작
+MAX_JSON_BYTES = 5_000_000  # 설정·프리셋 파일 최대 크기 (정상 파일은 수십 KB — 잘못 바뀐 아주 큰 파일을 읽느라 멈추지 않게)
+
+
+def _decode_json(raw: bytes) -> dict:
+    """설정 파일 내용 → dict. 메모장으로 고쳐 저장한 파일도 읽는다: UTF-8 BOM(예전 메모장 기본), UTF-16('유니코드'),
+    ANSI(한글 Windows 의 CP949). 예전에는 BOM 만 붙어도 '손상'으로 보고 설정·프리셋을 기본값으로 되돌렸고,
+    ANSI·UTF-16 은 시작하자마자 UnicodeDecodeError 로 꺼졌다. 맨 위가 {…} 가 아니면 ValueError."""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16")
+    else:
         try:
-            os.replace(path, path.with_suffix(path.suffix + ".broken"))
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("mbcs" if sys.platform == "win32" else "cp949")
+    data = json.loads(text)
+    if not isinstance(data, dict):  # [], "글자", 숫자, null — 예전에는 .get 호출에서 AttributeError 로 꺼졌음
+        raise ValueError("JSON 맨 위가 {…} 형식이 아닙니다")
+    return data
+
+
+def _read_json(path: Path) -> tuple[dict | None, str | None]:
+    """(내용, 알림). 파일이 없으면 (None, None). 읽을 수 없는(손상된) 파일은 '.broken' 으로 옮겨 보관하고
+    (None, 사용자에게 보일 알림) — 예전에는 아무 말 없이 기본값으로 시작해 설정이 왜 사라졌는지 알 수 없었다."""
+    try:
+        if path.stat().st_size > MAX_JSON_BYTES:
+            raise ValueError("파일이 너무 큽니다")
+        return _decode_json(path.read_bytes()), None
+    except FileNotFoundError:
+        return None, None
+    except (ValueError, OSError, RecursionError) as e:  # JSONDecodeError·UnicodeDecodeError 는 ValueError, 깊은 중첩은 RecursionError
+        backup = path.with_suffix(path.suffix + ".broken")
+        try:
+            os.replace(path, backup)
+            kept = f"원래 파일은 '{backup.name}' 이름으로 같은 폴더에 보관했습니다."
         except OSError:
-            pass
-        return None
+            kept = "원래 파일은 보관하지 못했습니다."
+        reason = str(e).splitlines()[0][:200] if str(e) else type(e).__name__
+        return None, f"'{path.name}' 파일을 읽을 수 없어 기본값으로 시작했습니다. {kept}\n({reason})"
 
 
 class ConfigManager:
     def __init__(self, path: Path = CONFIG_PATH):
         self.path = path
         self.save_error: str | None = None
-        raw = _read_json(path) or {}
+        raw, self.load_notice = _read_json(path)  # load_notice: 손상된 파일을 기본값으로 바꿨으면 그 알림 (시작 후 한 번 표시)
+        raw = raw or {}
         self.data = _deep_merge(DEFAULT_CONFIG, raw)
         # 설정 마법사 이전 버전을 쓰던 사람(설정 파일은 있는데 키가 없음)은 이미 설정했으므로 자동으로 띄우지 않음
         if raw and "setup_done" not in raw:
@@ -241,7 +267,7 @@ def _clean_presets(raw: list) -> list[dict]:
 class PresetManager:
     def __init__(self, path: Path = PRESETS_PATH):
         self.path = path
-        data = _read_json(path)
+        data, self.load_notice = _read_json(path)
         if not data or not isinstance(data.get("presets"), list):
             data = {"presets": copy.deepcopy(DEFAULT_PRESETS)}
         self.presets: list[dict] = _clean_presets(data["presets"])[:MAX_PRESETS]
@@ -265,6 +291,8 @@ class PresetManager:
     def validate_name(name: str) -> str | None:
         if not name:
             return "프리셋 이름을 입력해 주세요."
+        if any(ord(c) < 32 or ord(c) == 127 for c in name):  # 붙여 넣은 줄 바꿈·탭 (목록에서 이름이 깨져 보임)
+            return "프리셋 이름에 줄 바꿈·탭 같은 문자는 쓸 수 없습니다."
         if len(name) > MAX_PRESET_NAME:
             return f"프리셋 이름은 {MAX_PRESET_NAME}글자 이내로 입력해 주세요. (현재 {len(name)}글자)"
         return None
