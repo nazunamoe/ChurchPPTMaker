@@ -767,7 +767,9 @@ class App(ctk.CTk):
         avail = (canvas.winfo_width() if canvas is not None else self.scroll.winfo_width()) - 2 * scaled(self, 6)
         if avail < scaled(self, 200):
             return  # 아직 배치 전
-        min_line = scaled(self, 24)
+        # 연결선 최소 길이. 24 였을 때는 [열기] 도구를 넣은 뒤로 시작(최소) 창 크기에서 짧은 행까지 1px 모자라 모두
+        # 두 줄이 됐다(실측: 목록 501 < 30+140+24+170+138=502) → 순서가 절반만 보였음
+        min_line = scaled(self, 8)
         for part in self._row_parts:
             try:
                 if not part["row"].winfo_exists():
