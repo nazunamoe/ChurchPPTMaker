@@ -1,2 +1,4 @@
-customtkinter>=5.2
+# 위쪽 한계: 주 버전이 바뀌면 동작이 달라질 수 있어 확인한 범위로 제한 (CustomTkinter 는 안쪽 위젯
+# (_parent_canvas 등)까지 쓰므로 특히 — 6.0 에서 확인). 올릴 때는 실행·빌드해 본 뒤 숫자를 바꿀 것
+customtkinter>=5.2,<7
 pywin32>=306
