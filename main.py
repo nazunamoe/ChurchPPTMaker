@@ -170,7 +170,8 @@ class App(ctk.CTk):
         self._fit_to_screen(MIN_WIDTH, START_MEASURE_HEIGHT)
         _disable_full_redraw_on_resize(self)
 
-        self.items: list[ServiceItem] = []
+        # 마지막으로 작업하던 순서를 다시 보여 준다 — 예전에는 프리셋으로 저장하지 않고 닫으면 묻지도 않고 사라졌음
+        self.items: list[ServiceItem] = [ServiceItem.from_dict(d) for d in self.cfg.get("last_items") or []]
         self.row_widgets: list[tk.Frame] = []
         self._row_parts: list[dict] = []  # 행별 위젯·전체 글자·줄 바꿈 상태 (_layout_rows)
         self._layout_job = None
@@ -321,6 +322,9 @@ class App(ctk.CTk):
         notices = [n for n in (self.cfg.load_notice, self.presets.load_notice) if n]
         if notices:  # 손상된 설정·프리셋 파일을 기본값으로 바꿨음 — 왜 설정이 사라졌는지, 원래 파일이 어디 있는지 알림
             messagebox.showwarning("설정 파일을 읽을 수 없음", "\n\n".join(notices), parent=self)
+        if self.items:
+            self._set_status(f"지난번에 작업하던 순서 {len(self.items)}개 항목을 다시 불러왔습니다.",
+                             "새로 시작하려면 [전체 비우기]를 누르거나 프리셋을 고르세요.")
         if not self.cfg.get("setup_done"):  # 처음 실행: 창이 보인 뒤 설정 마법사
             self._open_setup_wizard()
 
@@ -689,6 +693,8 @@ class App(ctk.CTk):
         for idx, item in enumerate(self.items):
             self.row_widgets.append(self._make_row(idx, item))
         self.count_label.configure(text=f"{len(self.items)}개 항목")
+        if [i.to_dict() for i in self.items] != self.cfg.get("last_items"):
+            self._schedule_save()  # 순서가 바뀌면 잠시 뒤 설정에 보관 (다시 켤 때 그대로 — _save_basic)
         if self.items:
             self.scroll.update_idletasks()  # 알약 너비(reqwidth)를 알아야 줄 바꿈 여부를 정할 수 있음
             self._layout_rows()
@@ -1354,6 +1360,7 @@ class App(ctk.CTk):
 
     def _save_basic(self):
         self._save_job = None
+        self.cfg.set("last_items", None, [i.to_dict() for i in self.items], save=False)
         self.cfg.set("church_name", None, self.church_entry.get().strip(), save=False)
         self.cfg.set("worship_type", None, self.worship_entry.get().strip())
 

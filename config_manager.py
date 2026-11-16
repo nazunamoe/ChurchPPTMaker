@@ -31,6 +31,7 @@ DEFAULT_CONFIG: dict = {
     "appearance_mode": "System",
     "use_system_accent": True,  # Windows 강조 색을 프로그램 강조 색으로 (다시 켤 때 적용)
     "setup_done": False,  # 설정 마법사를 한 번 보였음 (처음 실행할 때만 자동으로 띄움)
+    "last_items": [],  # 마지막으로 작업하던 순서 (다시 켜면 그대로 보임 — 프리셋으로 저장하지 않아도 사라지지 않게)
     "paths": {
         "template_dir": "templates",
         "hymn_dir": "hymns",
@@ -67,6 +68,16 @@ def clean_fill_defaults(raw) -> list[str]:
     """빈 칸 기본값을 정확히 MAX_FILL 개의 문자열로 (외부에서 고친 설정의 잘못된 값은 빈 문자열)."""
     raw = raw if isinstance(raw, list) else []
     return [(v if isinstance(v, str) else "") for v in raw[:MAX_FILL]] + [""] * (MAX_FILL - min(len(raw), MAX_FILL))
+
+
+MAX_SAVED_ITEMS = 200  # 설정에 보관하는 '마지막 순서' 최대 항목 수 (예배 순서는 보통 10~30개)
+
+
+def clean_items(raw) -> list[dict]:
+    """외부에서 고칠 수 있는 항목 목록(설정의 last_items) → 검증된 항목 dict 목록 (프리셋 항목과 같은 규칙)."""
+    if not isinstance(raw, list):
+        return []
+    return [ServiceItem.from_dict(d).to_dict() for d in raw if isinstance(d, dict)][:MAX_SAVED_ITEMS]
 
 
 TEMP_KEEP_DEFAULT = 10  # 임시 파일 최대 보관 개수 (ppt.temp_keep)
@@ -200,6 +211,7 @@ class ConfigManager:
         # 외부에서 고친 설정의 역본 목록에 문자열이 아닌 값이 있으면 화면(검색·표시)에서 오류가 나므로 걸러 냄
         bl = self.data["bible2ppt"].get("bible_list")
         self.data["bible2ppt"]["bible_list"] = [x for x in bl if isinstance(x, str)] if isinstance(bl, list) else []
+        self.data["last_items"] = clean_items(self.data.get("last_items"))
         self.data["ppt"]["fill_defaults"] = clean_fill_defaults(self.data["ppt"].get("fill_defaults"))
         self.data["ppt"]["temp_keep"] = clean_temp_keep(self.data["ppt"].get("temp_keep"))
         # 기본값이 None 이라 타입 검사를 받지 않는 값 — 숫자가 아니면 말씀 생성 때 TypeError 가 났음
