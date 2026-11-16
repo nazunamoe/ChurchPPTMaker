@@ -56,6 +56,7 @@ CAPTION_FONT = "Segoe MDL2 Assets"  # Windows 기본 창 버튼 모양 (Win10/11
 CAPTION_GLYPHS = {"min": "\uE921", "max": "\uE922", "restore": "\uE923", "close": "\uE8BB"}
 CLOSE_HOVER = ("#C42B1C", "#C42B1C")
 MAX_UNDO = 30  # [되돌리기]로 돌아갈 수 있는 횟수
+MAX_LOG_LINES = 2000  # [로그]에 남기는 최대 줄 수 (생성을 시작할 때마다 비움 — 그 밖의 오류 기록이 끝없이 쌓이지 않게)
 START_REVEAL_MS = 2000  # 시작 크기 계산이 늦어져도 이 시간 뒤에는 창을 보이게 함
 # 생성 중 종료(_on_close): 창을 숨기고 생성이 정리되기를 기다리는 최대 시간. 켠 PowerPoint 를 끄면 수 초 안에 끝나고,
 # 사용자의 PowerPoint 로 만드는 중이면 끝까지 만들어야 하므로 길게
@@ -1378,6 +1379,7 @@ class App(ctk.CTk):
             self.cfg.set("setup_done", None, True)
         if not saved:
             return
+        self._warn_if_not_saved()
         self._refresh_files()
         self._update_filename_preview()
         self._apply_bible_settings()
@@ -1387,6 +1389,7 @@ class App(ctk.CTk):
         old_accent = bool(self.cfg.get("use_system_accent"))
         preview = (self.date_entry.get().strip(), self.church_entry.get().strip(), self.worship_entry.get().strip())
         if SettingsDialog(self, self.cfg, preview).show():
+            self._warn_if_not_saved()
             ctk.set_appearance_mode(self.cfg.get("appearance_mode") or "System")
             self._refresh_files()
             self._update_filename_preview()
@@ -1396,6 +1399,13 @@ class App(ctk.CTk):
             self._set_status("설정을 저장했습니다." + (f" 오래된 임시 파일 {len(removed)}개를 지웠습니다." if removed else ""),
                              "강조 색은 프로그램을 다시 켜면 바뀝니다."
                              if bool(self.cfg.get("use_system_accent")) != old_accent else "")
+
+    def _warn_if_not_saved(self):
+        """설정 창·마법사에서 [저장]했는데 파일에 쓰지 못했으면 알림 (쓰기가 막힌 프로그램 폴더 — 지금 실행 중에는 적용되지만
+        다시 켜면 사라짐). 예전에는 시작할 때 한 번만 알리고, 저장할 때는 '저장했습니다' 라고만 나왔다."""
+        if self.cfg.save_error:
+            messagebox.showwarning("설정 저장 불가", "바꾼 설정은 프로그램을 끌 때까지만 적용됩니다.\n\n"
+                                   f"{SAVE_ERROR_HINT}\n\n{self.cfg.save_error}", parent=self)
 
     def _schedule_save(self):
         if self._save_job:
@@ -1760,6 +1770,20 @@ class App(ctk.CTk):
         self.log_lines.append(f"[{dt.datetime.now():%H:%M:%S}] {msg}")
         if "⚠" in msg:
             self._set_status(msg.strip())
+
+    def report_callback_exception(self, exc, val, tb):
+        """버튼·타이머 콜백에서 난 예상하지 못한 오류. Tk 기본 동작은 콘솔에 찍는 것인데 배포판(exe)은 콘솔이 없어
+        아무 흔적 없이 '눌러도 반응이 없는' 것처럼 보였다 → [로그]에 남기고 상태 줄에 알림 (파일로 저장하지는 않음)."""
+        text = "".join(traceback.format_exception(exc, val, tb)).rstrip()
+        try:
+            self.log_lines.append(f"[{dt.datetime.now():%H:%M:%S}] 프로그램 오류:\n{text}")
+            del self.log_lines[:-MAX_LOG_LINES]
+            self._set_status("⚠ 프로그램 오류가 났습니다 — [로그]에서 내용을 확인할 수 있습니다.",
+                             f"{exc.__name__}: {val}"[:200])
+        except Exception:  # noqa: BLE001 — 오류를 알리다가 다시 오류가 나도 프로그램은 계속
+            pass
+        if sys.stderr is not None:  # 개발 중(python main.py)에는 콘솔에도
+            print(text, file=sys.stderr)
 
     def _show_help(self):
         HelpDialog(self).show()

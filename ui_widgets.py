@@ -447,6 +447,8 @@ class CalendarPopup(ctk.CTkFrame):
         if self._closed:
             return
         self._closed = True
+        # Python 3.12 이하의 unbind(seq, funcid) 는 창의 <Button-1>·<Escape> 바인딩을 전부 지운다 → 달력을 닫은 뒤
+        # 다이얼로그의 Esc 가 듣지 않게 됨. _Modal 과 같이 이 콜백만 해제
         for seq, funcid in getattr(self, "_binds", []):
             _unbind(self._win, seq, funcid)
         super().destroy()
@@ -458,8 +460,6 @@ class CalendarPopup(ctk.CTkFrame):
         self._render()
 
     def _pick(self, d: dt.date):
-        # Python 3.12 이하의 unbind(seq, funcid) 는 창의 <Button-1>·<Escape> 바인딩을 전부 지운다 → 달력을 닫은 뒤
-        # 다이얼로그의 Esc 가 듣지 않게 됨. _Modal 과 같이 이 콜백만 해제
         self.on_pick(d)
         self.destroy()
 
@@ -2209,9 +2209,9 @@ def pump_ui_queue(root: tk.Misc, interval_ms: int = 50) -> None:
             break
         try:
             fn()
-        except Exception:  # noqa: BLE001
-            import traceback
-            traceback.print_exc()
+        except Exception:  # noqa: BLE001 — 한 콜백의 오류로 큐 처리가 멈추지 않게. 기록은 Tk 콜백 오류와 같은 곳으로
+            import sys
+            root.report_callback_exception(*sys.exc_info())
     root.after(interval_ms, lambda: pump_ui_queue(root, interval_ms))
 
 
