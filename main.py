@@ -55,6 +55,10 @@ CAPTION_FONT = "Segoe MDL2 Assets"  # Windows 기본 창 버튼 모양 (Win10/11
 CAPTION_GLYPHS = {"min": "\uE921", "max": "\uE922", "restore": "\uE923", "close": "\uE8BB"}
 CLOSE_HOVER = ("#C42B1C", "#C42B1C")
 START_REVEAL_MS = 2000  # 시작 크기 계산이 늦어져도 이 시간 뒤에는 창을 보이게 함
+# 생성 중 종료(_on_close): 창을 숨기고 생성이 정리되기를 기다리는 최대 시간. 켠 PowerPoint 를 끄면 수 초 안에 끝나고,
+# 사용자의 PowerPoint 로 만드는 중이면 끝까지 만들어야 하므로 길게
+QUIT_WAIT_OWN_MS = 30_000
+QUIT_WAIT_SHARED_MS = 600_000
 # 최소 높이를 재기 전 (투명한) 첫 창 높이. 왼쪽 패널보다 낮으면 템플릿 목록이 0줄로 눌려 사라져서(unmapped)
 # _apply_min_size 가 잴 수 없음 — 820 은 성경 영역에 역본2 줄을 넣은 뒤 부족했음. 화면보다 크면 화면에 맞춰짐
 START_MEASURE_HEIGHT = 1000
@@ -179,6 +183,7 @@ class App(ctk.CTk):
         self._build_overlay: BuildOverlay | None = None  # 생성 중 화면 (제목 줄 아래를 덮음)
         self._build_cancelled = False  # [생성 중단]으로 PowerPoint 를 끈 생성 (실패 창 대신 '중단함')
         self._ppt_before: set[int] = set()  # 생성 시작 때 이미 켜져 있던 PowerPoint (강제 종료하지 않음)
+        self._quit_after_build = False  # 생성 중 종료: 창을 숨기고 생성이 정리되면 끝냄 (_on_close)
         self._save_job = None
         self._calendar: CalendarPopup | None = None
         self._bible_preview = False  # 말씀 더블클릭으로 Bible2PPT 실행 중 (PowerPoint 를 쓰므로 생성과 동시에 하지 않음)
@@ -1592,6 +1597,9 @@ class App(ctk.CTk):
 
         def done(result, err):
             self.building = False
+            if self._quit_after_build:  # 생성 중에 종료를 눌러 창을 숨기고 기다리던 중 (_on_close)
+                self.destroy()
+                return
             self._hide_build_overlay()
             self.build_btn.configure(state="normal", text=BUILD_LABEL)
             self.preview_btn.configure(state="normal")
@@ -1702,10 +1710,42 @@ class App(ctk.CTk):
         LogDialog(self, self.log_lines).show()
 
     def _on_close(self):
-        if self.building and not messagebox.askyesno("종료", "PPT 생성 중입니다. 그래도 종료할까요?", parent=self):
+        """생성 중에 그냥 끝내면 작업 스레드가 도중에 끊겨, 이 프로그램이 켠 PowerPoint 가 보이지 않는 채로 남는다
+        (실측: 창 없는 POWERPNT.EXE 168MB — 원본·결과 파일을 잡고 있어 다음 생성이 '결과 파일이 열려 있습니다' 로 막히는데
+        닫을 창이 없음). 그래서 창만 숨기고 생성이 정리된 뒤에 끝낸다:
+        - 이 프로그램이 켠 PowerPoint: 강제로 꺼서 중단([생성 중단]과 같은 방법) → 바로 정리됨
+        - 생성 전부터 켜져 있던 PowerPoint(사용자 문서가 있어 끌 수 없음): 끝까지 만든 뒤 종료"""
+        if not self.building:
+            self._save_basic()
+            self.destroy()
+            return
+        if self._quit_after_build:
+            return
+        own_ppt = not self._ppt_before
+        if not messagebox.askyesno(
+                "종료", "PPT 를 만드는 중입니다. 만들기를 중단하고 종료할까요?\n\n"
+                "만드는 데 쓰던 PowerPoint 도 함께 끕니다 (그사이 PowerPoint 에서 직접 연 문서가 있으면\n"
+                "저장하지 않은 내용이 사라집니다)." if own_ppt else
+                "PPT 를 만드는 중입니다.\n쓰고 계시던 PowerPoint 로 만들고 있어 중간에 끊을 수 없습니다.\n\n"
+                "창을 닫고, 다 만든 뒤에 프로그램을 종료할까요?", icon="warning", parent=self):
             return
         self._save_basic()
-        self.destroy()
+        if not self.building:  # 묻는 사이 끝났음
+            self.destroy()
+            return
+        self._quit_after_build = True
+        self.withdraw()
+        if own_ppt:
+            self._build_cancelled = True
+            self._kill_own_powerpoint()
+        # 끝내 정리되지 않아도(PowerPoint 가 응답하지 않는 등) 보이지 않는 채로 계속 남지는 않게 함
+        self.after(QUIT_WAIT_OWN_MS if own_ppt else QUIT_WAIT_SHARED_MS, self.destroy)
+
+    def _kill_own_powerpoint(self):
+        """종료 대기 중: 이번 생성이 켠 PowerPoint 를 끈다. 아직 켜지는 중일 수 있어 생성이 끝날 때까지 되풀이."""
+        if self.building:
+            kill_powerpoint(powerpoint_pids() - self._ppt_before)
+            self.after(300, self._kill_own_powerpoint)
 
 
 if __name__ == "__main__":
