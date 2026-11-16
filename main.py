@@ -1830,6 +1830,38 @@ class App(ctk.CTk):
             self.after(300, self._kill_own_powerpoint)
 
 
+_instance_mutex = None  # 프로세스가 끝날 때까지 쥐고 있어야 함 (닫히면 다른 실행을 막지 못함)
+
+
+def _already_running() -> bool:
+    """이미 실행 중이면 그 창을 앞으로 가져오고 True. 실수로 두 번 켜면(더블클릭을 두 번 등) 두 창이 같은 설정 파일을
+    서로 덮어쓰고(나중에 닫은 쪽 값만 남음), 동시에 생성하면 [원본 서식 유지] 붙여넣기가 PowerPoint 의 활성 창·클립보드를
+    같이 써서 슬라이드가 섞일 수 있다. 다른 폴더에 둔 사본끼리도 PowerPoint 는 하나를 같이 쓰므로 한 번에 하나만.
+    이름 앞 'Local\\' = 로그인한 사용자(세션)별 — 다른 사용자가 같은 PC 에서 쓰는 것은 막지 않음."""
+    global _instance_mutex
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.restype = ctypes.c_void_p
+        _instance_mutex = k32.CreateMutexW(None, False, "Local\\ChurchPPTMaker.SingleInstance")
+        if not _instance_mutex or ctypes.get_last_error() != 183:  # ERROR_ALREADY_EXISTS
+            return False
+        u32 = ctypes.windll.user32
+        u32.FindWindowW.restype = ctypes.c_void_p
+        u32.MessageBoxW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint)
+        hwnd = u32.FindWindowW(None, APP_TITLE)
+        if hwnd and u32.IsWindowVisible(ctypes.c_void_p(hwnd)):
+            if u32.IsIconic(ctypes.c_void_p(hwnd)):
+                u32.ShowWindow(ctypes.c_void_p(hwnd), 9)  # SW_RESTORE
+            u32.SetForegroundWindow(ctypes.c_void_p(hwnd))
+        else:  # 창이 없음: 막 켜지는 중이거나, 생성 중에 종료해 마무리하는 중(_on_close)
+            u32.MessageBoxW(None, "프로그램이 이미 실행 중입니다.\n\n창이 보이지 않으면 켜지는 중이거나, 종료하면서 PPT 생성을 "
+                            "마무리하는 중입니다.\n잠시 뒤에 다시 실행해 주세요.", APP_NAME, 0x40)  # MB_ICONINFORMATION
+        return True
+    except (AttributeError, OSError):
+        return False  # 확인할 수 없으면 그냥 실행
+
+
 if __name__ == "__main__":
-    _set_app_user_model_id()
-    App().mainloop()
+    if not _already_running():
+        _set_app_user_model_id()
+        App().mainloop()
