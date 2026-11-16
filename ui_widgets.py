@@ -193,6 +193,20 @@ def tk_font(widget: tk.Misc, size: float = 13, weight: str = "normal") -> tuple:
     return (FONT_FAMILY, -scaled(widget, size), weight)
 
 
+_MEASURE_FONTS: dict[tuple, tkfont.Font] = {}
+
+
+def measure_font(widget: tk.Misc, size: float = 13, weight: str = "normal") -> tkfont.Font:
+    """글자 너비를 잴 때 쓰는 글꼴 (tk_font 와 같은 크기). 한 번 만들어 다시 쓴다 — 잴 때마다 tkfont.Font 를 만들면
+    Tcl 명명 글꼴이 쌓였다가 GC 때 지워지는데(font() 와 같은 문제), 파일 이름 미리보기는 글자를 칠 때마다·창 크기가
+    바뀔 때마다 재므로 그만큼 만들고 지웠다."""
+    key = tk_font(widget, size, weight)
+    f = _MEASURE_FONTS.get(key)
+    if f is None:
+        f = _MEASURE_FONTS[key] = tkfont.Font(font=key)
+    return f
+
+
 class _Modal(ctk.CTkFrame):
     """메인 창 안에 뜨는 모달 다이얼로그 (Win11 ContentDialog 스타일).
 

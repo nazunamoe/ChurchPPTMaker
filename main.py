@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 import tkinter as tk
-import tkinter.font as tkfont
+import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -28,8 +28,8 @@ from models import (DEFAULT_FILENAME_FORMAT, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, 
                     KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, numbered_token, validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
                         TEXT2, BuildOverlay, CalendarPopup, DragController, HelpDialog, ItemDialog, LogDialog,
-                        SettingsDialog, SetupWizard, TempFilesDialog, TextPrompt, accent_button, apply_accent, card, font, modal_open,
-                        mode_color, open_folder,
+                        SettingsDialog, SetupWizard, TempFilesDialog, TextPrompt, accent_button, apply_accent, card, font,
+                        measure_font, modal_open, mode_color, open_folder,
                         post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
@@ -504,7 +504,7 @@ class App(ctk.CTk):
         lb = self.filename_preview
         avail = lb.master.winfo_width() - self.output_btn.winfo_width() - scaled(self, 24)
         if avail > 50:  # 아직 배치 전(너비 1)이면 그대로
-            f = tkfont.Font(family=FONT_FAMILY, size=-scaled(self, 12))
+            f = measure_font(self, 12)
             if f.measure(text) > avail:
                 head, tail = text[:len(text) // 2], text[len(text) // 2:]
                 while (head or tail) and f.measure(head + "…" + tail) > avail:
@@ -817,7 +817,7 @@ class App(ctk.CTk):
         """알약 너비가 max_width 를 넘으면 글자 끝을 '…' 로 줄인 문구 (알약 여백은 전체 글자일 때 너비로 계산)."""
         if full_width <= max_width or len(text) <= 1:
             return text
-        f = tkfont.Font(font=tk_font(self, 13, "bold" if bold else "normal"))
+        f = measure_font(self, 13, "bold" if bold else "normal")
         margin = full_width - f.measure(text)
         room = max_width - margin
         lo, hi = 0, len(text)
