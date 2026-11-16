@@ -251,8 +251,23 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", "", s).lower()
 
 
-def find_template(folder: Path, name: str) -> Path | None:
-    files = list_ppt_files(folder)
+class FileLists:
+    """폴더의 PPT 목록을 한 번만 읽어 다시 쓴다 (list_ppt_files 와 같은 호출 형태 — find_* 의 lister 로 넘김).
+    생성 전 점검은 찬송·CCM 항목마다 폴더를 하위까지 다시 훑었다(항목 12개 = 12번, 화면 스레드에서 한 번 + 작업
+    스레드에서 한 번). 점검 한 번 동안만 쓰고 버리므로 그사이 넣은 파일을 못 보는 일은 없다."""
+
+    def __init__(self):
+        self._lists: dict[tuple[str, bool], list[Path]] = {}
+
+    def __call__(self, folder: Path, recursive: bool = False) -> list[Path]:
+        key = (str(folder), recursive)
+        if key not in self._lists:
+            self._lists[key] = list_ppt_files(folder, recursive)
+        return self._lists[key]
+
+
+def find_template(folder: Path, name: str, lister=list_ppt_files) -> Path | None:
+    files = lister(folder)
     for p in files:
         if p.stem == name:
             return p
@@ -385,8 +400,8 @@ def folder_conflict(cfg: ConfigManager, key: str, path: str | Path) -> str | Non
     return None
 
 
-def find_hymn(folder: Path, value: str) -> Path | None:
-    files = list_ppt_files(folder, recursive=True)
+def find_hymn(folder: Path, value: str, lister=list_ppt_files) -> Path | None:
+    files = lister(folder, recursive=True)
     num = hymn_number(value)
     if num is None:  # 곡명으로 검색
         target = _norm(value)
@@ -408,7 +423,7 @@ def list_ccm_files(folder: Path) -> list[str]:
     return sorted((p.relative_to(folder).as_posix() for p in files), key=lambda r: (ccm_title(r).lower(), r))
 
 
-def find_ccm(folder: Path, value: str) -> Path | None:
+def find_ccm(folder: Path, value: str, lister=list_ppt_files) -> Path | None:
     """① 저장된 상대 경로 그대로 ② (파일이 다른 하위 폴더로 옮겨졌으면) 같은 파일 이름 ③ 공백·대소문자 무시 이름.
     presets.json 등은 외부 입력이므로 CCM 폴더 밖을 가리키는 경로('..', 절대 경로)는 인정하지 않는다."""
     value = value.replace("\\", "/").strip()
@@ -422,7 +437,7 @@ def find_ccm(folder: Path, value: str) -> Path | None:
         p = (root / rel).resolve()
         if p.is_relative_to(root) and p.is_file() and p.suffix.lower() in PPT_EXTS:
             return p
-    files = list_ppt_files(folder, recursive=True)
+    files = lister(folder, recursive=True)
     name = value.rsplit("/", 1)[-1]
     for q in files:
         if q.name == name:
@@ -451,19 +466,20 @@ class WorshipBuilder:
         self.progress = progress
 
     # 사전 점검: 생성 전에 UI 에서 누락 파일을 한 번에 알려주기 위함
-    def resolve_item(self, it: ServiceItem) -> tuple[Path | None, str | None]:
+    def resolve_item(self, it: ServiceItem, lister=list_ppt_files) -> tuple[Path | None, str | None]:
         """항목 하나의 원본 PPT → (경로, 문제). 말씀은 생성할 때 만들어지므로 (None, None).
-        생성 전 점검과 순서 목록 더블클릭(원본 열기)이 같은 규칙으로 파일을 찾도록 한 곳에 둔다."""
+        생성 전 점검과 순서 목록 [열기](원본 열기)가 같은 규칙으로 파일을 찾도록 한 곳에 둔다.
+        lister: 폴더 목록 읽기 (여러 항목을 한꺼번에 볼 때는 FileLists 로 폴더를 한 번만 읽음)."""
         if it.kind == KIND_BIBLE:
             return None, None
         if it.kind == KIND_HYMN:
-            p = find_hymn(self.cfg.resolve_path("hymn_dir"), it.value)
+            p = find_hymn(self.cfg.resolve_path("hymn_dir"), it.value, lister)
             return p, None if p else f"찬송 '{it.value}' — 찬송가 폴더에서 PPT 를 찾지 못함"
         if it.kind == KIND_CCM:
-            p = find_ccm(self.cfg.resolve_path("ccm_dir"), it.value)
+            p = find_ccm(self.cfg.resolve_path("ccm_dir"), it.value, lister)
             return p, None if p else f"CCM '{it.display_value}' — CCM 폴더에서 PPT 를 찾지 못함"
         if it.kind == KIND_PRAYER:
-            p = find_template(self.cfg.resolve_path("prayer_dir"), it.label)
+            p = find_template(self.cfg.resolve_path("prayer_dir"), it.label, lister)
             return p, None if p else f"'{it.label}' — 기도 템플릿 폴더에 '{it.label}.pptx' 없음"
         if it.kind == KIND_SERMON:
             p = sermon_template(self.cfg)
@@ -471,7 +487,7 @@ class WorshipBuilder:
                 return None, "설교 — ⚙ 설정에서 설교 템플릿 PPT 를 지정해 주세요"
             return p, None if p else ("설교 — 설교 템플릿 PPT 를 찾을 수 없음: "
                                       f"{self.cfg.get('item_templates', 'sermon_file')}")
-        p = find_template(self.cfg.resolve_path("template_dir"), it.label)
+        p = find_template(self.cfg.resolve_path("template_dir"), it.label, lister)
         return p, None if p else f"'{it.label}' — 템플릿 폴더에 '{it.label}.pptx' 없음"
 
     def check_bible(self) -> str | None:
@@ -491,8 +507,9 @@ class WorshipBuilder:
     def resolve(self, items: list[ServiceItem]) -> tuple[list[Path | None], list[str]]:
         paths: list[Path | None] = []
         problems: list[str] = []
+        lister = FileLists()  # 이 점검 동안 폴더마다 한 번만 읽음
         for idx, it in enumerate(items, 1):
-            p, problem = self.resolve_item(it)
+            p, problem = self.resolve_item(it, lister)
             if problem:
                 problems.append(f"{idx}. {problem}")
             paths.append(p)

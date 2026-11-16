@@ -184,17 +184,24 @@ def match_bible(entry: str, values: list[str]) -> str | None:
     return next((v for v in values if v.startswith(f"{entry} · ") or v.startswith(f"{entry} [")), None)
 
 
+_cli_cache: dict[tuple[str, int, int], bool] = {}  # (경로, 크기, 수정 시각) → supports_cli 결과 (마지막 exe 하나만)
+
+
 def supports_cli(exe: Path) -> bool:
     """명령줄 지원 여부를 실행하지 않고 판별 (GUI 전용 버전은 인자를 무시하고 창을 띄운 채 멈춤).
     .NET Framework 어셈블리면 CLI 도움말 문자열(UTF-16)이 exe 에 그대로 들어 있으므로 그 유무로 판단.
     그 외 형식(단일 파일 압축 배포 등)은 판별할 수 없으므로 지원한다고 본다."""
     try:
-        data = exe.read_bytes()
+        st = exe.stat()
+        key = (str(exe), st.st_size, st.st_mtime_ns)
+        if key not in _cli_cache:  # exe 전체를 읽으므로 같은 파일은 한 번만 (말씀 추가·생성 전 점검·실행 때마다 불림)
+            data = exe.read_bytes()
+            _cli_cache.clear()
+            _cli_cache[key] = (b".NETFramework,Version=" not in data
+                               or "--list-bibles".encode("utf-16-le") in data)
+        return _cli_cache[key]
     except OSError:
         return True
-    if b".NETFramework,Version=" not in data:
-        return True
-    return "--list-bibles".encode("utf-16-le") in data
 
 
 def safe_bible_arg(entry: str) -> str:
