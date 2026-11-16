@@ -64,7 +64,7 @@ ChurchPPTMaker/
 │ 교회 이름 [________]  날짜 [YYYY-MM-DD][📅][오늘]  예배 종류 [________]          │
 │ → 저장: C:\…\output\2026-10-11_사랑교회_주일오전예배.pptx       [출력 폴더 열기 ↗] │
 ├ 좌측: 템플릿 파일 ──────┬ 우측 패널 "순서" (초안 그대로) ─────────────────────┤
-│ 템플릿 파일 N개 [폴더↗][↻]│ 순서 (N개)                  [순서 파일 ▾][전체 비우기] │
+│ 템플릿 파일 N개 [폴더↗][↻]│ 순서 (N개)      [↶ 되돌리기][순서 파일 ▾][전체 비우기] │
 │ [사용자 지정]에 쓰는 PPT│ 프리셋 [▼ 고르면 바로 적용] [프리셋으로 저장] [삭제]   │
 │ [🔍 검색]               │ ┌──────────────────────────────────────────────┐ │
 │ 📄 예배로 부름          │ │ ⋮⋮ [예배로 부름]────────[인도자]  열기 ▲ ▼ ✕  │ │
@@ -141,10 +141,28 @@ ChurchPPTMaker/
   예전에는 알약 더블클릭이 열기라 안내 없이는 알 수 없었고, 한 번 클릭의 수정 창도 더블클릭 간격(최대 500ms)만큼 늦었음 →
   2026-10-12 [열기] 도구로 바꾸고 클릭은 즉시 수정. 팔레트 아래 안내 두 줄에 '항목을 누르면 수정, [열기]는 원본'.
   말씀 열기(Bible2PPT)와 생성은 둘 다 PowerPoint 를 쓰므로 동시에 하지 않음(`_bible_preview`/`building`).
+- **되돌리기**(`App._remember`/`_undo_last`, 순서 제목 줄 [↶ 되돌리기]·Ctrl+Z): 순서를 바꾸는 곳(추가·수정·이동·끌어 옮기기·
+  삭제·전체 비우기·프리셋 적용·순서 파일 불러오기)은 **바꾸기 직전에 `_remember()`** 를 부른다 — 새로 순서를 바꾸는 기능을
+  만들면 같이 부를 것. `MAX_UNDO`(30)번, 항목 개체는 제자리에서 고치지 않는다는 전제로 목록만 복사. Ctrl+Z 는 다이얼로그가
+  떠 있거나(`ui_widgets.modal_open`) 포커스가 Entry·Text 면 무시. ✕ 는 묻지 않고 바로 지우므로 되돌리기가 유일한 복구 수단.
+- **마지막 순서 복원**: `_render_list` 가 순서가 바뀐 것을 보면 `_schedule_save` → `_save_basic` 이 `config.last_items` 에 보관
+  (종료할 때도). 시작할 때 `ConfigManager` 가 `clean_items` 로 검증(프리셋과 같은 `from_dict` + `validate_item` 통과분만,
+  `MAX_SAVED_ITEMS` 200)한 것을 `App.items` 로. 예전에는 프리셋으로 저장하지 않고 닫으면 묻지도 않고 사라졌음.
+- **한 번에 하나만 실행**(`main._already_running`, 이름 있는 뮤텍스 `Local\ChurchPPTMaker.SingleInstance`): 두 번 켜면 떠 있는
+  창을 복원·앞으로 가져오고 끝낸다(창이 없으면 안내 창). 두 창이 설정 파일을 서로 덮어쓰고, 동시에 생성하면 PowerPoint
+  활성 창·클립보드를 같이 써서 섞이기 때문. `App()` 을 직접 만드는 시험 코드는 이 검사를 거치지 않는다.
+- **생성 중 종료**(`App._on_close`): 바로 끝내면 작업 스레드(daemon)가 끊겨 이 프로그램이 켠 PowerPoint 가 창 없이 남는다
+  (실측 168MB — 원본·결과 파일을 잡고 있어 다음 생성이 '결과 파일이 열려 있습니다' 로 막히는데 닫을 창이 없음).
+  → 확인 후 창을 숨기고(`withdraw`) `_quit_after_build` 로 표시, 생성이 정리되면(`done`) `destroy`.
+  생성 전에 PowerPoint 가 없었으면(`_ppt_before` 빔) `_kill_own_powerpoint` 가 생성이 끝날 때까지 0.3초마다 끔([생성 중단]과
+  같은 방법, 실측 0.5초 안에 종료). 사용자가 켜 둔 PowerPoint 로 만드는 중이면 끌 수 없으므로 끝까지 만든 뒤 종료.
+  끝내 정리되지 않으면 `QUIT_WAIT_OWN_MS`(30초)/`QUIT_WAIT_SHARED_MS`(10분) 뒤 종료.
 - 순서 행 줄 바꿈(`App._layout_rows`): 행은 grid `[손잡이][왼쪽 알약][연결선][오른쪽 알약][▲▼✕]`. 한 줄에 안 들어가면
   오른쪽 알약을 아랫줄(columnspan 1~3, 오른쪽 정렬 — 다른 행의 오른쪽 알약과 끝을 맞춤)로 내리고, 그래도 넘치면 글자를
   '…' 로 줄임(`_fit_pill`, 알약 여백 = 전체 글자일 때 reqwidth − 글자 폭). 너비는 처음 그릴 때 한 번 재 두고, 목록 캔버스
   `<Configure>` 마다 grid 만 바꿈(위젯을 다시 만들지 않음). 왼쪽 알약도 너무 길면 줄임.
+  연결선 최소 길이(`min_line`)는 8 — 24 였을 때는 [열기] 도구를 넣은 뒤로 최소(=시작) 창 폭에서 짧은 행까지 1px 모자라
+  전부 두 줄이 됐다(실측: 목록 501 < 30+140+24+170+138). 행에 도구를 더 넣으면 최소 창 폭에서 한 줄에 들어가는지 확인할 것.
 - 순서 목록 스크롤: CTk 는 Windows 에서 휠 한 칸 = 20단위 × `yscrollincrement`(기본 1px)라 느렸음 →
   `ORDER_SCROLL_UNIT`(2.4 논리 px, 배율 반영)로 한 칸 ≈ 행 하나. 배율이 바뀌면 다시 지정. 설정 창 스크롤도 같은 값.
 - 하단 팔레트 버튼(기도/찬송/말씀/설교/CCM/사용자 지정)을 순서 목록으로 **드래그&드롭**하면 놓은 위치에 삽입, 단순 클릭은 맨 아래 추가.
@@ -250,6 +268,10 @@ Bible2PPT.exe <성경 구절...> [옵션]
 - **OneDrive 출력 폴더**: 처음부터 결과 경로로 SaveAs 하면 PowerPoint 가 그 뒤로 클라우드 문서로 다뤄 마지막 `Save` 가 내 PC 의
   파일에 들어가지 않았다(실측: 60초 뒤에도 첫 PPT 슬라이드만). → 작업 폴더(`_tmp/result/`)에 만들고 **마지막에 결과 경로로
   SaveAs**. 결과 파일이 이미 PowerPoint 에 열려 있으면 다 만든 뒤가 아니라 시작할 때 오류(`_already_open(by_name=False)`).
+  이 확인(`PptEngine.check_output_free`)은 `WorshipBuilder.build` 가 **말씀(Bible2PPT) 생성 전에도** 부르고, 그보다 먼저
+  `App._build` 가 `worship_builder.file_in_use`(쓰기용으로 열어 봄 — PowerPoint 가 편집 중인 .pptx 는 PermissionError, 실측)로
+  [생성]을 누르자마자 알린다. 지난번 결과를 띄워 둔 채 다시 만드는 일이 흔한데, 예전에는 덮어쓸지 묻고 PowerPoint 를 켠 뒤
+  (말씀이 있으면 다 만든 뒤)에야 오류가 났음.
 - 암호가 걸린 .pptx/.pptm(ZIP 대신 OLE 형식 — `_OLE_SIGNATURE`)은 열기 전에 오류. 그대로 열면 PowerPoint 가 암호 창을 띄우고
   끝없이 기다렸음(실측). .ppt 는 원래 OLE 라 구별 못 함 → 멈춤 안내로 처리.
 - 창 숨기기 `_FrameHider`(with 블록, NewWindow·Activate·Close·Quit 때만 짧게): 전용 스레드의 WinEvent 훅(EVENT_OBJECT_SHOW)으로
@@ -276,7 +298,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
 ```json
 {
   "church_name": "", "worship_type": "주일오전예배", "filename_format": "{날짜}_{교회이름}_{예배종류}",
-  "appearance_mode": "System", "use_system_accent": true, "setup_done": false,
+  "appearance_mode": "System", "use_system_accent": true, "setup_done": false, "last_items": [],
   "paths": {"template_dir": "templates", "hymn_dir": "hymns", "ccm_dir": "ccm", "prayer_dir": "prayers",
             "output_dir": "output"},
   "bible2ppt": {"exe_path": "", "bible": "", "bible2": "", "template": "", "lines": null, "timeout_sec": 180,
@@ -295,6 +317,12 @@ Bible2PPT.exe <성경 구절...> [옵션]
   로 가져간 이름도 같은 개체). 색은 `HKCU\...\Explorer\Accent\AccentPalette`(7단계)에서 라이트 모드 Dark1·다크 모드 강조 색부터,
   흰 글자 명암비 4.5:1 이상이 될 때까지 어두운 단계로(`pick_accent` — 노랑 등 밝은 색도 버튼 글자가 읽히게). 못 읽으면 기본 파랑.
   항목 종류 색(`KIND_COLORS`)·삭제 빨강(`DANGER`)은 강조 색과 별개 — 강조 색이 빨강이면 삭제 글자와 비슷해 보일 수 있음.
+- `last_items`: 마지막으로 작업하던 순서(프리셋 항목과 같은 형식, §4 마지막 순서 복원). 기도자·설교자 이름이 들어 있으므로
+  README 에 '프로그램 폴더를 남에게 줄 때는 config.json·presets.json 을 빼라'고 안내.
+- 읽기(`config_manager._read_json` → `_decode_json`): UTF-8(BOM 있든 없든)·UTF-16·ANSI(mbcs) 를 모두 읽는다 — 메모장으로 고쳐
+  저장한 파일. 예전에는 BOM 만 붙어도 손상으로 보고 설정·프리셋을 기본값으로 되돌렸고, ANSI·UTF-16·맨 위가 `{…}` 가 아닌
+  JSON·아주 깊은 중첩은 시작하자마자 예외로 꺼졌다(실측). 읽을 수 없으면 `.broken` 으로 옮기고 `load_notice` 에 알림 →
+  `App._after_reveal` 이 한 번 표시. `MAX_JSON_BYTES`(5MB) 초과는 읽지 않음.
 - `temp_keep`: §9-2 미리 보기(임시 파일). 예전 `temp_mode` 키는 쓰지 않음(남아 있어도 무시). `temp_keep` 은 `config_manager.clean_temp_keep` 으로 1~100 정수(잘못된 값은 10).
 - 상대 경로는 프로그램 폴더 기준. 누락 키는 기본값으로 자동 병합. 교회 이름/예배 종류/파일 이름 형식/폴더는 메인 UI에서 바로 저장됨, 나머지는 ⚙ 설정.
 
@@ -449,6 +477,22 @@ Bible2PPT.exe <성경 구절...> [옵션]
     중단 후 상태·PowerPoint 종료, 생성 전부터 켜진 PowerPoint 는 끄지 않음), 라이트/다크 화면 캡처, 앞선 회귀 테스트 전부.
   - 확인 못 함: 실제 라이선스 동의·로그인 창(처음 설치한 Office 가 없어 암호 창으로 대신), PowerPoint 2016 이하.
 
+- 2026-11-16 v1.0.10: 사용성·속도·안전 전체 점검 (코드 전체를 읽고 실제 PowerPoint·격리한 앱으로 재현한 것만 고침).
+  - 고친 것: 메모장으로 고친(BOM·ANSI·UTF-16) 또는 형식이 틀린 설정·프리셋 파일에서 시작이 꺼지거나 조용히 초기화,
+    생성 중 종료하면 창 없는 PowerPoint 가 남음, 결과 파일이 열려 있을 때 한참 뒤에야 오류, 시작(최소) 창 크기에서 순서 행이
+    모두 두 줄, 달력을 닫으면 창 바인딩이 지워짐(Python 3.12 이하), 콜백 예외·설정 저장 실패가 보이지 않음, 두 번 실행.
+  - 넣은 것: 순서 [↶ 되돌리기](Ctrl+Z), 마지막 순서 복원, 순서 파일 불러오기 [취소], 패키지 주 버전 상한.
+  - 속도: 생성 전 점검의 폴더 읽기를 폴더당 한 번으로(`worship_builder.FileLists` — 찬송가 645 + CCM 500, 항목 12개:
+    52 → 26ms. 이 PC 의 SSD 기준이라 차이가 작고, 네트워크·OneDrive 폴더에서 효과가 큼), Bible2PPT exe 명령줄 지원 확인을
+    파일당 한 번(`bible_bridge._cli_cache`), 글자 너비 측정 글꼴 재사용.
+  - 검증: 설정·프리셋 파일 17가지(목록·글자·BOM·CP949·UTF-16·깊은 중첩·잘린 파일·잘못된 항목), 실제 PowerPoint 로 생성 중 종료
+    (켠 PowerPoint: 0.5초 뒤 종료·남은 프로세스 0 / 켜져 있던 PowerPoint: 10~14초 뒤 다 만들고 종료·문서 그대로), 결과가 열린 채
+    재생성(0.01초 만에 안내), 되돌리기 21건, 복원 3단계, 작은 화면 수정 16건, 두 번 실행(둘째는 0.9초 만에 끝나고 첫 창 복원).
+  - 확인 못 함: Python 3.12 이하에서의 달력 바인딩(3.14 에서는 원래 문제가 나지 않음 — 해제 방식만 확인), 실제 Bible2PPT,
+    빌드한 exe 로의 실행(소스 실행으로만 확인).
+  - 보류(고치지 않음): 병합이 클립보드를 쓰므로 생성하면 사용자가 복사해 둔 내용이 사라짐(형식이 여러 가지라 되살리기 어려움),
+    `%TEMP%\ChurchPPT_*` 작업 폴더는 프로세스가 강제로 죽으면 남음.
+
 ## 11. 구현 시 주의사항 (검증된 함정)
 - **CTkToplevel 사용 금지** → `ui_widgets._Modal`(창 내부 오버레이) 상속. CTkToplevel 은 생성 때마다 `bind_all("<Button-1>")`를 누적하고
   창 숨김·강제 update·ctypes 호출을 하며, 반복 사용 시 접근 위반 크래시가 났다.
@@ -458,7 +502,12 @@ Bible2PPT.exe <성경 구절...> [옵션]
   안쪽 Tk 위젯(`_canvas`, `_label`)에 `tk.call(w._w, "configure", "-cursor", …)` 로 직접, 그리고 값이 바뀔 때만.
 - `CTkFrame` 은 높이 2px 이하를 0으로 그려 보이지 않는다 → 구분선/연결선은 `height=3` 이상.
 - CTk 의 `place(x=, y=)` 는 좌표에 배율을 곱한다 → 실제 픽셀 좌표는 `ScalingTracker.get_widget_scaling` 으로 나눠 전달.
-- 폰트는 `ui_widgets.font()` 캐시만 사용 (렌더링마다 CTkFont 생성 금지).
+- 폰트는 `ui_widgets.font()` 캐시만 사용 (렌더링마다 CTkFont 생성 금지). 글자 너비를 잴 때도 `tkfont.Font` 를 그때마다
+  만들지 말고 `ui_widgets.measure_font(widget, 크기, 굵기)` (같은 이유 — 미리보기는 글자를 칠 때마다 잼).
+- 콜백 예외: `App.report_callback_exception` 이 [로그]에 남기고 상태 줄에 알린다 (`pump_ui_queue` 의 콜백 오류도 같은 곳).
+  배포판(exe)은 콘솔이 없어 예전에는 흔적 없이 '눌러도 반응 없음' 이 됐다. 로그는 메모리에만(`MAX_LOG_LINES`), 파일로 쓰지 않음.
+- 창에 건 바인딩 해제는 `_unbind()` — `CalendarPopup` 이 `Misc.unbind(seq, funcid)` 를 써서 Python 3.12 이하에서는 달력을 닫을 때
+  창의 `<Escape>`·`<Button-1>` 바인딩이 전부 지워졌다(아래 `_Modal` 항목과 같은 함정).
 - 작업 스레드에서 tkinter 호출 금지 → `post_to_ui()` / `run_in_thread()`.
 - `_Modal` 은 중첩 가능(예: 항목 입력 → 역본 검색). Esc/Enter 는 창 단위 바인딩이라 `_Modal._stack` 맨 위만 반응하고,
   닫힐 때 아래 다이얼로그 grab 을 복구한다. 바인딩 해제는 `_unbind()` 사용 — Python 3.12 이하 `Misc.unbind(seq, funcid)` 는
@@ -530,7 +579,9 @@ Bible2PPT.exe <성경 구절...> [옵션]
 - 남은 위험(코드로 막을 수 없음): COM 으로 연 PPT 는 보호된 보기 없이 열린다 → 매크로는 막지만 PowerPoint 자체 취약점을 노린
   파일은 막지 못함. 출처를 알 수 없는 PPT 는 템플릿·찬송가·CCM 폴더에 넣지 않도록 안내. 빌드 패키지 버전은 `>=` 라 고정되지 않음.
 - config.json / presets.json 은 외부에서 수정될 수 있는 입력으로 취급: 기본값과 타입이 다른 값은 무시, 잘못된 프리셋/항목은 버림,
-  `options` 는 문자열 값만 유지.
+  `options` 는 문자열 값만 유지. `ServiceItem.from_dict` 는 글자·숫자가 아닌 label·value(null·목록 등)를 빈 값으로, 제어 문자를
+  공백으로 바꾸고, 글자가 아닌 kind 는 custom (예전에는 kind 가 목록이면 TypeError 로 시작이 꺼졌음). 프리셋 이름의 제어 문자 거부.
+  파일 전체가 잘못됐을 때(맨 위가 dict 아님·인코딩·깊은 중첩·5MB 초과)는 §8 읽기 규칙대로 `.broken` 보관 + 알림.
 - 설정 마법사(2026-10-10 점검): **[마침]에서 모든 단계를 다시 검사**한 값만 저장. 단계마다 [다음]에서만 검사하던 때는
   숨긴 쪽 입력칸에 포커스가 남아(grid_remove 해도 포커스는 유지) 확인 단계에서 친 `.bat` 경로가 검사 없이 저장됐음(실측) →
   단계를 넘길 때 포커스를 다이얼로그로 옮기고, 저장 직전 전체 재검사. (실행은 `Bible2PPT._run` 의 `.exe` 검사가 막아 실제
