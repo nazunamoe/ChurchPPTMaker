@@ -386,6 +386,18 @@ def output_conflict(cfg: ConfigManager, output: Path, sources=()) -> str | None:
     return None
 
 
+def file_in_use(path: Path) -> bool:
+    """덮어쓸 수 없는 파일인지 (PowerPoint 등 다른 프로그램이 열어 둠, 읽기 전용). 쓰기용으로 열어만 본다 — 내용·수정
+    시각은 바뀌지 않음. 없는 파일은 False. PowerPoint 가 편집 중인 .pptx 는 PermissionError 가 난다(실측)."""
+    try:
+        with open(path, "r+b"):
+            return False
+    except PermissionError:
+        return True
+    except OSError:  # 없는 파일 등 — 여기서 판단하지 않음 (저장할 때 다시 확인됨)
+        return False
+
+
 def folder_conflict(cfg: ConfigManager, key: str, path: str | Path) -> str | None:
     """폴더 지정(📁·설정 마법사) 때 쓸 수 없는 폴더면 오류 메시지. 임시 폴더 안은 임시 파일 정리 때 그 안의 PPT 가
     지워질 수 있어 거부하고, 출력 폴더는 원본 폴더와 겹쳐 원본을 덮어쓰지 않는지 미리 확인한다 (cfg 의 다른 폴더 기준)."""
@@ -550,6 +562,7 @@ class WorshipBuilder:
             with PptEngine(self.log, pcfg.get("text_placeholder", ""), pcfg.get("text_shape_name", ""),
                            pcfg.get("merge_mode") or MERGE_SOURCE_FORMATTING, pcfg.get("fill_defaults"),
                            pcfg.get("slide_size") or "original") as eng:
+                eng.check_output_free(output)  # 결과 파일이 열려 있으면 말씀을 만들기 전에 바로 알림
                 # 1) Bible2PPT 로 성경 PPT 생성 (PowerPoint 를 쓰므로 병합 전에 순차 실행)
                 if n_bible:
                     eng.hold()

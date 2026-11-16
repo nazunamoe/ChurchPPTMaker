@@ -288,6 +288,12 @@ class PptEngine:
             pass
         return False
 
+    def check_output_free(self, output: Path) -> None:
+        """결과 파일이 이 PowerPoint 에서 열려 있으면 오류. 말씀(Bible2PPT) 생성 전에도 부른다 — 예전에는 병합을 시작할
+        때에야 확인해서, 말씀이 여러 개면 몇 분 기다린 뒤에 '닫고 다시 시도' 를 봤다."""
+        if self._already_open(Path(output).resolve(), by_name=False):
+            raise PptEngineError(f"결과 파일이 PowerPoint 에서 열려 있습니다. 닫고 다시 시도해 주세요:\n{output}")
+
     def _open(self, path: Path):
         path = Path(path)
         # 암호가 걸린 PPT 는 PowerPoint 가 암호 창을 띄우고 답을 기다려 생성이 끝나지 않는다(실측).
@@ -332,8 +338,7 @@ class PptEngine:
         progress = progress or (lambda *a: None)
         output = Path(output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
-        if self._already_open(output, by_name=False):  # 다 만든 뒤 마지막 저장에서야 실패하지 않도록 미리 확인
-            raise PptEngineError(f"결과 파일이 PowerPoint 에서 열려 있습니다. 닫고 다시 시도해 주세요:\n{output}")
+        self.check_output_free(output)  # 다 만든 뒤 마지막 저장에서야 실패하지 않도록 미리 확인
         # 작업 파일에 만들고 마지막에 output 으로 SaveAs 한다. OneDrive 폴더에 처음부터 SaveAs 하면 PowerPoint 가 그 뒤로
         # 클라우드 문서로 다뤄 마지막 Save 가 내 PC 의 파일에 들어가지 않았다 (실측: 60초 뒤에도 첫 PPT 슬라이드만 남음)
         work = self._tmp / "result" / output.name

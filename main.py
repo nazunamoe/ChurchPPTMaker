@@ -34,7 +34,7 @@ from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY
 from version import APP_NAME, __version__
 from window_frame import CustomFrame
 from ppt_engine import kill_powerpoint, powerpoint_pids, show_powerpoint_dialogs
-from worship_builder import (PPT_EXTS, BuildError, _has_reparse_point, BuildRequest, WorshipBuilder, find_template,
+from worship_builder import (PPT_EXTS, BuildError, _has_reparse_point, BuildRequest, WorshipBuilder, file_in_use, find_template,
                              list_ccm_files, list_ppt_files, list_temp_results, output_conflict, output_filename, prayer_template_names,
                              prune_temp_results, sanitize_filename, saved_name_for_temp, sermon_template, temp_dir_conflict,
                              temp_result_dir, template_fill_slots, validate_filename_format)
@@ -1561,6 +1561,14 @@ class App(ctk.CTk):
         if not temp:  # 임시 실행은 매번 새 이름(_시분초)으로 임시 폴더에 만들므로 덮어쓰기 확인이 필요 없음
             if (err := output_conflict(self.cfg, out)) is not None:
                 messagebox.showerror("저장할 수 없습니다", err, parent=self)
+                return
+            # 지난번 결과를 PowerPoint 에 띄워 둔 채 다시 만드는 일이 흔함 — 예전에는 덮어쓸지 묻고 PowerPoint 를 켠 뒤에야
+            # (말씀이 있으면 말씀까지 다 만든 뒤에야) '닫고 다시 시도' 오류가 났다 → 시작하기 전에 알림
+            if file_in_use(out):
+                messagebox.showerror("저장할 수 없습니다",
+                                     f"같은 이름의 결과 파일을 덮어쓸 수 없습니다:\n{out.name}\n\n"
+                                     "PowerPoint 등에서 열려 있으면 닫은 뒤 다시 시도해 주세요.\n"
+                                     f"닫지 않고 확인만 하려면 [{PREVIEW_LABEL}]를 쓸 수 있습니다.", parent=self)
                 return
             if out.exists() and not messagebox.askyesno("덮어쓰기", f"이미 같은 이름의 파일이 있습니다.\n{out.name}\n\n덮어쓸까요?",
                                                          parent=self):
