@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from models import (DEFAULT_FILENAME_FORMAT, KIND_BIBLE, KIND_CUSTOM, KIND_HYMN, KIND_PRAYER, KIND_SERMON, MAX_FILL,
-                    ServiceItem)
+                    ServiceItem, validate_item)
 
 MAX_PRESETS = 10
 MAX_PRESET_NAME = 10
@@ -74,10 +74,12 @@ MAX_SAVED_ITEMS = 200  # 설정에 보관하는 '마지막 순서' 최대 항목
 
 
 def clean_items(raw) -> list[dict]:
-    """외부에서 고칠 수 있는 항목 목록(설정의 last_items) → 검증된 항목 dict 목록 (프리셋 항목과 같은 규칙)."""
+    """외부에서 고칠 수 있는 항목 목록(설정의 last_items) → 검증된 항목 dict 목록.
+    화면에서 만든 항목은 모두 validate_item 을 통과한 것이므로, 통과하지 못하는 항목(직접 고친 값)은 버린다."""
     if not isinstance(raw, list):
         return []
-    return [ServiceItem.from_dict(d).to_dict() for d in raw if isinstance(d, dict)][:MAX_SAVED_ITEMS]
+    items = (ServiceItem.from_dict(d) for d in raw if isinstance(d, dict))
+    return [it.to_dict() for it in items if validate_item(it) is None][:MAX_SAVED_ITEMS]
 
 
 TEMP_KEEP_DEFAULT = 10  # 임시 파일 최대 보관 개수 (ppt.temp_keep)

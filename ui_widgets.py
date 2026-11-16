@@ -262,6 +262,11 @@ class _Modal(ctk.CTkFrame):
                 pass
 
 
+def modal_open() -> bool:
+    """다이얼로그(_Modal)가 떠 있는지 — 메인 화면의 단축키가 다이얼로그 뒤에서 동작하지 않게 할 때 사용."""
+    return bool(_Modal._stack)
+
+
 WARN_BG = ("#FFF4CE", "#433519")  # Win11 InfoBar '경고' 배경
 WARN_ICON = ("#9D5D00", "#FCE100")
 

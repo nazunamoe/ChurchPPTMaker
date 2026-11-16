@@ -28,7 +28,8 @@ from models import (DEFAULT_FILENAME_FORMAT, KIND_BIBLE, KIND_CCM, KIND_CUSTOM, 
                     KIND_PRAYER, KIND_SERMON, MAX_FILL, ServiceItem, numbered_token, validate_item)
 from ui_widgets import (ACCENT, BG, BORDER, BTN_HOVER, CARD, DANGER, FONT_FAMILY, KIND_COLORS, PILL_BORDER, SUBTLE, TEXT,
                         TEXT2, BuildOverlay, CalendarPopup, DragController, HelpDialog, ItemDialog, LogDialog,
-                        SettingsDialog, SetupWizard, TempFilesDialog, TextPrompt, accent_button, apply_accent, card, font, mode_color, open_folder,
+                        SettingsDialog, SetupWizard, TempFilesDialog, TextPrompt, accent_button, apply_accent, card, font, modal_open,
+                        mode_color, open_folder,
                         post_to_ui, pump_ui_queue, run_in_thread, scaled,
                         secondary_button, tk_font)
 from version import APP_NAME, __version__
@@ -54,6 +55,7 @@ TOP_RESIZE_EDGE = 5  # 제목 줄 맨 위 이 높이(논리 px)에서는 창 위
 CAPTION_FONT = "Segoe MDL2 Assets"  # Windows 기본 창 버튼 모양 (Win10/11 기본 글꼴)
 CAPTION_GLYPHS = {"min": "\uE921", "max": "\uE922", "restore": "\uE923", "close": "\uE8BB"}
 CLOSE_HOVER = ("#C42B1C", "#C42B1C")
+MAX_UNDO = 30  # [되돌리기]로 돌아갈 수 있는 횟수
 START_REVEAL_MS = 2000  # 시작 크기 계산이 늦어져도 이 시간 뒤에는 창을 보이게 함
 # 생성 중 종료(_on_close): 창을 숨기고 생성이 정리되기를 기다리는 최대 시간. 켠 PowerPoint 를 끄면 수 초 안에 끝나고,
 # 사용자의 PowerPoint 로 만드는 중이면 끝까지 만들어야 하므로 길게
@@ -172,6 +174,7 @@ class App(ctk.CTk):
 
         # 마지막으로 작업하던 순서를 다시 보여 준다 — 예전에는 프리셋으로 저장하지 않고 닫으면 묻지도 않고 사라졌음
         self.items: list[ServiceItem] = [ServiceItem.from_dict(d) for d in self.cfg.get("last_items") or []]
+        self._undo: list[list[ServiceItem]] = []  # 순서를 바꾸기 전 모습 (최근 MAX_UNDO 번 — [되돌리기]·Ctrl+Z)
         self.row_widgets: list[tk.Frame] = []
         self._row_parts: list[dict] = []  # 행별 위젯·전체 글자·줄 바꿈 상태 (_layout_rows)
         self._layout_job = None
@@ -590,6 +593,12 @@ class App(ctk.CTk):
         self.order_file_btn = secondary_button(head, "순서 파일 ▾", self._open_order_file_menu, width=96)
         self.order_file_btn.configure(height=28, font=font(12))
         self.order_file_btn.pack(side="right", padx=(0, 6))
+        # 되돌리기: ✕ 는 묻지 않고 바로 지우고, 프리셋 적용·전체 비우기는 순서를 통째로 바꾸므로 실수했을 때 되살릴 길
+        self.undo_btn = secondary_button(head, "↶ 되돌리기", self._undo_last, width=88)
+        self.undo_btn.configure(height=28, font=font(12), state="disabled")
+        self.undo_btn.pack(side="right", padx=(0, 6))
+        self.bind("<Control-z>", self._on_undo_key, add="+")
+        self.bind("<Control-Z>", self._on_undo_key, add="+")  # Caps Lock 이 켜져 있을 때
 
         # 프리셋 행: 프리셋 [▼ 고르면 바로 적용] [프리셋으로 저장] [삭제]
         # 예전에는 골라도 [불러오기]를 또 눌러야 했고, 새 프리셋은 같은 칸에 이름을 직접 쳐야 해서 알아채기 어려웠음
@@ -693,6 +702,9 @@ class App(ctk.CTk):
         for idx, item in enumerate(self.items):
             self.row_widgets.append(self._make_row(idx, item))
         self.count_label.configure(text=f"{len(self.items)}개 항목")
+        undo_state = "normal" if self._undo else "disabled"
+        if self.undo_btn.cget("state") != undo_state:
+            self.undo_btn.configure(state=undo_state)
         if [i.to_dict() for i in self.items] != self.cfg.get("last_items"):
             self._schedule_save()  # 순서가 바뀌면 잠시 뒤 설정에 보관 (다시 켤 때 그대로 — _save_basic)
         if self.items:
@@ -866,6 +878,7 @@ class App(ctk.CTk):
             if idx > data:
                 idx -= 1
             if idx != data:
+                self._remember()
                 self.items.insert(idx, self.items.pop(data))
                 self._render_list()
 
@@ -875,6 +888,26 @@ class App(ctk.CTk):
             self._prompt_new(data, len(self.items))
 
     # ================================================================ 항목 조작
+    def _remember(self):
+        """순서를 바꾸기 직전에 부른다 → [되돌리기]로 이 모습으로 돌아갈 수 있음. 항목 개체는 바꿀 때 새로 만들어 넣으므로
+        (제자리에서 고치지 않음) 목록만 복사해 둔다."""
+        self._undo.append(list(self.items))
+        del self._undo[:-MAX_UNDO]
+
+    def _undo_last(self):
+        if not self._undo or self.building:
+            return
+        self.items = self._undo.pop()
+        self._render_list()
+        self._set_status("순서를 바로 전 상태로 되돌렸습니다.",
+                         f"더 되돌릴 수 있는 횟수: {len(self._undo)}" if self._undo else "")
+
+    def _on_undo_key(self, e):
+        """Ctrl+Z. 다이얼로그가 떠 있거나 입력칸에 글자를 쓰는 중이면 순서를 건드리지 않는다."""
+        if modal_open() or e.widget.winfo_class() in ("Entry", "Text"):
+            return
+        self._undo_last()
+
     def _template_names(self) -> list[str]:
         return [p.stem for p in list_ppt_files(self.cfg.resolve_path("template_dir"))]
 
@@ -933,6 +966,7 @@ class App(ctk.CTk):
 
     def _insert(self, item: ServiceItem, idx: int | None = None):
         idx = len(self.items) if idx is None else max(0, min(idx, len(self.items)))
+        self._remember()
         self.items.insert(idx, item)
         self._render_list()
         self._set_status(f"추가됨: {item.label} {item.display_value}".strip())
@@ -1018,25 +1052,33 @@ class App(ctk.CTk):
             return
         item = self._dialog(self.items[idx].kind, self.items[idx])
         if item:
+            self._remember()
             self.items[idx] = item
             self._render_list()
 
     def _move_item(self, idx: int, delta: int):
         j = idx + delta
-        if 0 <= j < len(self.items):
+        if 0 <= idx < len(self.items) and 0 <= j < len(self.items):
+            self._remember()
             self.items[idx], self.items[j] = self.items[j], self.items[idx]
             self._render_list()
 
     def _remove_item(self, idx: int):
+        if not 0 <= idx < len(self.items):  # 빠르게 두 번 눌러 이미 지워진 줄
+            return
+        self._remember()
         removed = self.items.pop(idx)
         self._render_list()
-        self._set_status(f"삭제됨: {removed.label} {removed.display_value}".strip())
+        self._set_status(f"삭제됨: {removed.label} {removed.display_value}".strip(),
+                         "잘못 지웠으면 [↶ 되돌리기]를 누르세요.")
 
     def _clear_items(self):
         if self.items and messagebox.askyesno("전체 비우기", "순서 목록을 모두 비울까요?", parent=self):
-            self.items.clear()
+            self._remember()
+            self.items = []
             self._render_list()
             self._show_preset("")
+            self._set_status("순서를 모두 비웠습니다.", "잘못 비웠으면 [↶ 되돌리기]를 누르세요.")
 
     # ================================================================ 좌측: 파일 / 폴더 / 성경
     def _refresh_files(self):
@@ -1416,6 +1458,7 @@ class App(ctk.CTk):
         self._set_status(f"프리셋 '{name}' 저장됨 ({len(self.presets.presets)}/{MAX_PRESETS})")
 
     def _apply_preset(self, name: str):
+        self._remember()
         self.items = self.presets.load(name)
         self.worship_entry.delete(0, "end")
         self.worship_entry.insert(0, name)
@@ -1466,10 +1509,16 @@ class App(ctk.CTk):
                 messagebox.showwarning("불러오기 실패", "유효한 예배 순서 항목이 파일에 없습니다.", parent=self)
                 return
 
-            if self.items and not messagebox.askyesno("순서 파일 불러오기", "현재 순서를 파일 내용으로 대체할까요?\n'아니오'를 누르면 아래에 추가됩니다.", parent=self):
-                self.items = self.items + items
-            else:
-                self.items = items
+            # 예/아니오뿐이면 파일을 잘못 골랐을 때 그만둘 방법이 없었음 → 취소 가능
+            replace = True
+            if self.items:
+                replace = messagebox.askyesnocancel(
+                    "순서 파일 불러오기", f"파일에서 {len(items)}개 항목을 읽었습니다.\n\n"
+                    "예: 현재 순서를 파일 내용으로 바꿈\n아니오: 현재 순서 아래에 추가\n취소: 불러오지 않음", parent=self)
+                if replace is None:
+                    return
+            self._remember()
+            self.items = items if replace else self.items + items
 
             # 메타 정보 반영
             if "교회이름" in meta:
