@@ -434,10 +434,7 @@ class CalendarPopup(ctk.CTkFrame):
             return
         self._closed = True
         for seq, funcid in getattr(self, "_binds", []):
-            try:
-                self._win.unbind(seq, funcid)
-            except tk.TclError:
-                pass
+            _unbind(self._win, seq, funcid)
         super().destroy()
 
     def _move(self, delta: int):
@@ -447,6 +444,8 @@ class CalendarPopup(ctk.CTkFrame):
         self._render()
 
     def _pick(self, d: dt.date):
+        # Python 3.12 이하의 unbind(seq, funcid) 는 창의 <Button-1>·<Escape> 바인딩을 전부 지운다 → 달력을 닫은 뒤
+        # 다이얼로그의 Esc 가 듣지 않게 됨. _Modal 과 같이 이 콜백만 해제
         self.on_pick(d)
         self.destroy()
 
@@ -922,7 +921,7 @@ class ItemDialog(_Modal):
         self.template_picker = _SearchList(
             self, body, row, "템플릿 PPT *", names, names, current, missing_text=current, icon="📄",
             rows=self.TEMPLATE_ROWS, on_pick=self._update_custom_slots,
-            empty_text="템플릿 폴더에 PPT 파일이 없습니다. 왼쪽 [템플릿 파일]의 [불러오기]로 넣어 주세요.")
+            empty_text="템플릿 폴더에 PPT 파일이 없습니다. 왼쪽 [템플릿 파일]의 [PPT 추가]로 넣어 주세요.")
         self.label_widget = self.template_picker
 
     def _custom_label(self) -> str:
