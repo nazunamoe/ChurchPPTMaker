@@ -298,7 +298,7 @@ Bible2PPT.exe <성경 구절...> [옵션]
 ```json
 {
   "church_name": "", "worship_type": "주일오전예배", "filename_format": "{날짜}_{교회이름}_{예배종류}",
-  "appearance_mode": "System", "use_system_accent": true, "setup_done": false, "last_items": [],
+  "appearance_mode": "System", "use_system_accent": true, "setup_done": false, "last_items": [], "last_preset": "",
   "paths": {"template_dir": "templates", "hymn_dir": "hymns", "ccm_dir": "ccm", "prayer_dir": "prayers",
             "output_dir": "output"},
   "bible2ppt": {"exe_path": "", "bible": "", "bible2": "", "template": "", "lines": null, "timeout_sec": 180,
@@ -333,6 +333,15 @@ Bible2PPT.exe <성경 구절...> [옵션]
   순서 목록을 교체하고 예배 종류를 프리셋 이름으로, 파일 이름 형식을 프리셋의 형식으로 설정
   (`filename_format` 이 없는 예전 프리셋은 기본 형식). 지금 프리셋은 `_preset_current`(없으면 `PRESET_PLACEHOLDER` 표시,
   전체 비우기·순서 파일 불러오기 뒤에도 비움).
+- **수정됨 표시·이어 주기**: 지금 순서·파일 이름 형식이 지금 프리셋에 저장된 것과 다르면(`App._preset_dirty`) 콤보에
+  `이름  ● 수정됨`(`PRESET_DIRTY_MARK`, `_refresh_preset_mark` — `_render_list`·`_set_filename_format`·설정 저장·`_show_preset`
+  에서 부름. 프리셋에 저장되는 값을 늘리면 비교와 부르는 곳도 함께). 지금 프리셋은 `config.last_preset` 에 보관해
+  (`_save_basic`) 다시 켤 때 `last_items` 와 함께 이어 준다(없어진 프리셋·글자가 아닌 값은 비움). 예전에는 순서만 돌아오고
+  프리셋 연결이 끊겼음. 수정됨이면 [프리셋으로 저장]은 이름 창 없이 예/아니오/취소(예 = 지금 프리셋, 아니오 = 이름 창),
+  프리셋 고르기는 '저장되지 않았습니다'(같은 프리셋이면 '되돌릴까요')로 확인. 종료할 때 묻거나 프리셋에 자동 저장하지 않는
+  이유: 매주 프리셋에서 찬송 장·구절만 바꿔 쓰므로 거의 매번 수정됨 상태로 끝나고, 자동 저장하면 틀이 그 주 내용으로 덮임.
+  되돌리기 기록은 (항목, 프리셋, 파일 이름 형식) — 프리셋이 바뀌는 동작을 되돌리면 표시·형식도 함께(순서만 돌아오면
+  '다른 프리셋 ● 수정됨' 이 되어 저장이 엉뚱한 프리셋을 덮어씀).
 - [프리셋으로 저장]은 `ui_widgets.TextPrompt` 로 이름을 받음(기본값 = 지금 프리셋, 없으면 예배 종류 앞 10글자,
   `validate_name` 실패는 창 안에서 에러). 현재 파일 이름 형식도 함께 저장. [삭제]는 지금 프리셋(순서 목록은 그대로).
 - 기본 프리셋: 주일오전예배, 주일오후예배, 수요예배 (최초 실행 시 생성).
@@ -492,6 +501,10 @@ Bible2PPT.exe <성경 구절...> [옵션]
     빌드한 exe 로의 실행(소스 실행으로만 확인).
   - 보류(고치지 않음): 병합이 클립보드를 쓰므로 생성하면 사용자가 복사해 둔 내용이 사라짐(형식이 여러 가지라 되살리기 어려움),
     `%TEMP%\ChurchPPT_*` 작업 폴더는 프로세스가 강제로 죽으면 남음.
+- 2026-11-17: 프리셋을 고치다 닫으면 다시 켰을 때 프리셋 연결이 끊기던 문제 — 지금 프리셋 보관(`last_preset`)·'● 수정됨' 표시·
+  수정됨이면 한 번에 저장·프리셋 고를 때 저장 안 됨 안내·되돌리기가 프리셋 표시도 되돌림 (§9).
+  - 검증: 격리 설정 UI 26건(수정됨 표시/해제, 닫았다 켠 뒤 이어짐, 다른·같은 프리셋 고르기 확인 문구, 한 번에 저장, 형식만 변경,
+    비우기·프리셋 적용 되돌리기, 삭제된 프리셋, 잘못된 `last_preset` 값). 화면 캡처로 콤보 글자 모양은 확인 안 함.
 
 ## 11. 구현 시 주의사항 (검증된 함정)
 - **CTkToplevel 사용 금지** → `ui_widgets._Modal`(창 내부 오버레이) 상속. CTkToplevel 은 생성 때마다 `bind_all("<Button-1>")`를 누적하고

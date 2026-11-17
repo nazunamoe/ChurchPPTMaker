@@ -32,6 +32,7 @@ DEFAULT_CONFIG: dict = {
     "use_system_accent": True,  # Windows 강조 색을 프로그램 강조 색으로 (다시 켤 때 적용)
     "setup_done": False,  # 설정 마법사를 한 번 보였음 (처음 실행할 때만 자동으로 띄움)
     "last_items": [],  # 마지막으로 작업하던 순서 (다시 켜면 그대로 보임 — 프리셋으로 저장하지 않아도 사라지지 않게)
+    "last_preset": "",  # 그 순서를 만들 때 쓰던 프리셋 (다시 켜도 '어느 프리셋을 고치던 중'인지 이어짐. 없어졌으면 비움)
     "paths": {
         "template_dir": "templates",
         "hymn_dir": "hymns",

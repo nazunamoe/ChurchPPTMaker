@@ -46,6 +46,7 @@ BUILD_LABEL = "예배 PPT 병합 및 생성"
 PREVIEW_LABEL = "미리 보기 (저장 안 함)"
 MIN_FILE_ROWS = 4  # 최소 창 크기에서도 템플릿 파일 목록이 이만큼은 보이도록
 PRESET_PLACEHOLDER = "— 프리셋을 고르면 바로 적용 —"  # 프리셋 콤보에 아무것도 적용 안 됐을 때
+PRESET_DIRTY_MARK = "  ● 수정됨"  # 지금 순서·파일 이름 형식이 저장된 프리셋과 다를 때 콤보의 프리셋 이름 뒤에 붙임
 MIN_ORDER_LIST_H = 340  # 최소 창 크기에서 순서 목록 높이 (논리 단위, 순서 7줄)
 FILE_FONT_SIZE = 13.2  # 템플릿 파일 목록 글자 크기 (기본 12 의 110% — 항목 줄 높이도 글자 크기를 따라 커짐)
 ORDER_SCROLL_UNIT = 2.4  # 순서 목록 스크롤 단위(논리 px). 휠 한 칸 = 20단위 ≈ 48 = 행 하나 (CTk 기본 1px → 20px)
@@ -175,7 +176,8 @@ class App(ctk.CTk):
 
         # 마지막으로 작업하던 순서를 다시 보여 준다 — 예전에는 프리셋으로 저장하지 않고 닫으면 묻지도 않고 사라졌음
         self.items: list[ServiceItem] = [ServiceItem.from_dict(d) for d in self.cfg.get("last_items") or []]
-        self._undo: list[list[ServiceItem]] = []  # 순서를 바꾸기 전 모습 (최근 MAX_UNDO 번 — [되돌리기]·Ctrl+Z)
+        # 순서를 바꾸기 전 모습 (최근 MAX_UNDO 번 — [되돌리기]·Ctrl+Z): (항목 목록, 그때 프리셋, 그때 파일 이름 형식)
+        self._undo: list[tuple[list[ServiceItem], str, str]] = []
         self.row_widgets: list[tk.Frame] = []
         self._row_parts: list[dict] = []  # 행별 위젯·전체 글자·줄 바꿈 상태 (_layout_rows)
         self._layout_job = None
@@ -478,6 +480,7 @@ class App(ctk.CTk):
     def _set_filename_format(self, fmt: str):
         self.cfg.set("filename_format", None, fmt)
         self._update_filename_preview()
+        self._refresh_preset_mark()
 
     def _update_filename_preview(self):
         fmt = self._filename_format()
@@ -609,8 +612,11 @@ class App(ctk.CTk):
         self.preset_combo = ctk.CTkComboBox(prow, height=34, font=font(13), dropdown_font=font(13), values=[],
                                             state="readonly", command=self._on_preset_pick)
         self.preset_combo.pack(side="left", fill="x", expand=True)
-        self._preset_current = ""  # 지금 적용된 프리셋 (적용을 취소하면 콤보를 이 값으로 되돌림)
-        self._show_preset("")
+        # 지금 적용된 프리셋 (적용을 취소하면 콤보를 이 값으로 되돌림). 마지막 순서(last_items)와 함께 보관했다가 다시 켤 때
+        # 이어 준다 — 예전에는 순서만 돌아오고 어느 프리셋을 고치던 중인지는 잊어, 저장하려면 이름을 다시 골라야 했음
+        last = self.cfg.get("last_preset")
+        self._preset_current = last if isinstance(last, str) and self.presets.exists(last) else ""
+        self._show_preset(self._preset_current)
         b = secondary_button(prow, "프리셋으로 저장", self._save_preset, width=116)
         b.configure(height=34)
         b.pack(side="left", padx=(6, 0))
@@ -708,6 +714,7 @@ class App(ctk.CTk):
             self.undo_btn.configure(state=undo_state)
         if [i.to_dict() for i in self.items] != self.cfg.get("last_items"):
             self._schedule_save()  # 순서가 바뀌면 잠시 뒤 설정에 보관 (다시 켤 때 그대로 — _save_basic)
+        self._refresh_preset_mark()
         if self.items:
             self.scroll.update_idletasks()  # 알약 너비(reqwidth)를 알아야 줄 바꿈 여부를 정할 수 있음
             self._layout_rows()
@@ -894,13 +901,21 @@ class App(ctk.CTk):
     def _remember(self):
         """순서를 바꾸기 직전에 부른다 → [되돌리기]로 이 모습으로 돌아갈 수 있음. 항목 개체는 바꿀 때 새로 만들어 넣으므로
         (제자리에서 고치지 않음) 목록만 복사해 둔다."""
-        self._undo.append(list(self.items))
+        self._undo.append((list(self.items), self._preset_current, self._filename_format()))
         del self._undo[:-MAX_UNDO]
 
     def _undo_last(self):
         if not self._undo or self.building:
             return
-        self.items = self._undo.pop()
+        self.items, preset, fmt = self._undo.pop()
+        # 프리셋 적용·전체 비우기·순서 파일 불러오기를 되돌리면 프리셋 표시(와 그때 파일 이름 형식)도 함께 되돌린다 —
+        # 순서만 돌아오면 '다른 프리셋 ● 수정됨' 이 되어 [프리셋으로 저장]이 엉뚱한 프리셋을 덮어쓰게 됨
+        if not self.presets.exists(preset):
+            preset = ""
+        if preset != self._preset_current:
+            if not validate_filename_format(fmt):
+                self._set_filename_format(fmt)
+            self._show_preset(preset)
         self._render_list()
         self._set_status("순서를 바로 전 상태로 되돌렸습니다.",
                          f"더 되돌릴 수 있는 횟수: {len(self._undo)}" if self._undo else "")
@@ -1393,6 +1408,7 @@ class App(ctk.CTk):
             ctk.set_appearance_mode(self.cfg.get("appearance_mode") or "System")
             self._refresh_files()
             self._update_filename_preview()
+            self._refresh_preset_mark()  # 파일 이름 형식도 프리셋에 저장되는 값
             self._apply_bible_settings()
             # 보관 개수를 줄였으면 바로 정리 (임시 폴더가 원본 폴더와 겹치면 정리하지 않음)
             removed = [] if temp_dir_conflict(self.cfg) else prune_temp_results(self.cfg.get("ppt", "temp_keep"))
@@ -1415,6 +1431,7 @@ class App(ctk.CTk):
     def _save_basic(self):
         self._save_job = None
         self.cfg.set("last_items", None, [i.to_dict() for i in self.items], save=False)
+        self.cfg.set("last_preset", None, self._preset_current, save=False)
         self.cfg.set("church_name", None, self.church_entry.get().strip(), save=False)
         self.cfg.set("worship_type", None, self.worship_entry.get().strip())
 
@@ -1423,17 +1440,43 @@ class App(ctk.CTk):
         self.preset_combo.configure(values=self.presets.names())
 
     def _show_preset(self, name: str):
-        """콤보에 지금 프리셋 표시 (없으면 안내 문구)."""
-        self._preset_current = name
-        self.preset_combo.set(name or PRESET_PLACEHOLDER)
+        """콤보에 지금 프리셋 표시 (없으면 안내 문구, 저장된 것과 다르면 '● 수정됨')."""
+        if name != self._preset_current:
+            self._preset_current = name
+            self._schedule_save()  # 다시 켤 때 이어 주도록 보관 (_save_basic → last_preset)
+        self.preset_combo.set("")  # 아래에서 반드시 다시 쓰게 (목록에서 고른 직후에는 콤보에 이름만 들어가 있음)
+        self._refresh_preset_mark()
+
+    def _preset_dirty(self) -> bool:
+        """지금 순서·파일 이름 형식이 지금 프리셋에 저장된 것과 다른가 (프리셋이 없으면 False)."""
+        name = self._preset_current
+        if not name or not self.presets.exists(name):
+            return False
+        return ([i.to_dict() for i in self.items] != [i.to_dict() for i in self.presets.load(name)]
+                or self._filename_format() != self.presets.filename_format(name).strip())
+
+    def _refresh_preset_mark(self):
+        """콤보 글자를 지금 상태에 맞춤. 순서·파일 이름 형식·프리셋이 바뀌는 곳에서 부른다."""
+        name = self._preset_current
+        text = (name + PRESET_DIRTY_MARK if self._preset_dirty() else name) or PRESET_PLACEHOLDER
+        if self.preset_combo.get() != text:
+            self.preset_combo.set(text)
 
     def _on_preset_pick(self, name: str):
-        """목록에서 고르면 바로 적용 (지금 순서가 있으면 확인)."""
+        """목록에서 고르면 바로 적용 (지금 순서가 있으면 확인 — 저장 안 한 수정이 있으면 그렇다고 알림)."""
         if not self.presets.exists(name):
             self._show_preset(self._preset_current)
             return
-        if self.items and not messagebox.askyesno("프리셋", f"현재 순서를 '{name}' 프리셋으로 바꿀까요?", parent=self):
-            self._show_preset(self._preset_current)
+        cur = self._preset_current
+        if self._preset_dirty():
+            ask = (f"'{cur}' 프리셋을 고친 내용이 저장되지 않았습니다.\n\n"
+                   + (f"고친 내용을 버리고 저장된 '{name}' 프리셋으로 되돌릴까요?" if name == cur else
+                      f"저장하지 않고 '{name}' 프리셋으로 바꿀까요?")
+                   + "\n\n(고친 내용을 남기려면 [아니오]를 누른 뒤 [프리셋으로 저장])")
+        else:
+            ask = f"현재 순서를 '{name}' 프리셋으로 바꿀까요?" if self.items else ""
+        if ask and not messagebox.askyesno("프리셋", ask, parent=self):
+            self._show_preset(cur)
             return
         self._apply_preset(name)
 
@@ -1446,15 +1489,28 @@ class App(ctk.CTk):
         if err:
             messagebox.showerror("프리셋으로 저장", err + "\n(⚙ 설정 → 결과 파일 이름)", parent=self)
             return
-        initial = self._preset_current or self.worship_entry.get().strip()[:MAX_PRESET_NAME]
-        name = TextPrompt(self, "프리셋으로 저장", "프리셋 이름", initial,
-                          hint=f"지금 순서와 파일 이름 형식을 저장합니다 (이름 {MAX_PRESET_NAME}글자 이내, 최대 {MAX_PRESETS}개).\n"
-                               "같은 이름이 있으면 덮어쓸지 묻습니다.",
-                          validate=self.presets.validate_name).show()
+        # 지금 프리셋을 고친 상태면 이름을 다시 묻지 않고 그 프리셋에 바로 저장 (다른 이름으로 저장은 [아니오])
+        name, confirmed = "", False
+        if self._preset_dirty():
+            same = messagebox.askyesnocancel(
+                "프리셋으로 저장", f"고친 순서를 '{self._preset_current}' 프리셋에 저장할까요?\n\n"
+                f"예: '{self._preset_current}' 프리셋을 지금 순서로 바꿈\n아니오: 다른 이름으로 저장\n취소: 저장하지 않음",
+                parent=self)
+            if same is None:
+                return
+            if same:
+                name, confirmed = self._preset_current, True
+        if not name:
+            initial = self._preset_current or self.worship_entry.get().strip()[:MAX_PRESET_NAME]
+            name = TextPrompt(self, "프리셋으로 저장", "프리셋 이름", initial,
+                              hint=f"지금 순서와 파일 이름 형식을 저장합니다 (이름 {MAX_PRESET_NAME}글자 이내, 최대 {MAX_PRESETS}개).\n"
+                                   "같은 이름이 있으면 덮어쓸지 묻습니다.",
+                              validate=self.presets.validate_name).show()
         if not name:
             return
         if self.presets.exists(name):
-            if not messagebox.askyesno("프리셋으로 저장", f"'{name}' 프리셋이 이미 있습니다. 덮어쓸까요?", parent=self):
+            if not confirmed and not messagebox.askyesno("프리셋으로 저장", f"'{name}' 프리셋이 이미 있습니다. 덮어쓸까요?",
+                                                         parent=self):
                 return
         elif not self.presets.can_add(name):
             messagebox.showerror("프리셋으로 저장", f"프리셋은 최대 {MAX_PRESETS}개까지 저장할 수 있습니다.\n"
