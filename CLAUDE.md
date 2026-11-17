@@ -527,7 +527,9 @@ Bible2PPT.exe <성경 구절...> [옵션]
   - 검증(이 PC 는 x64): 빌드 함수(5.1 — PC CPU, Python 찾기 — 이 PC 의 Microsoft Store `python` 별칭은 떠보기 실패로 멈춤 없이 건너뜀, `py -0p` 줄, PE 헤더: PyInstaller ARM64 부트로더 4개가
     arm64), x64 PC 에서 `-Arch arm64`·잘못된 `-Python`·CPU 가 다른 `-Python` 안내, x64 빌드(가상환경 재사용, 버전 정보 이름),
     Actions 와 같은 명령 순서, 실행 시험 소스·exe 통과(+ 일부러 다른 CPU 기대 → 실패, 보통 창이면 제목 표시줄 45px 로 구별됨).
-  - 확인 못 함: 실제 ARM64 에서의 빌드·실행(Actions 를 아직 돌리지 않음), ARM64 PC 의 PowerPoint 로 PPT 생성, Windows 10 on Arm.
+  - GitHub Actions(windows-11-arm, Python 3.14.10 win-arm64): 빌드 111초 → ChurchPPTMaker-arm64.exe 14.4MB(PE arm64),
+    실행 시험 소스·exe 전부 통과(COM, 창 틀 콜백 — 제목 표시줄 0px, WinEvent 훅, 메인 창, exe 창 뜸·WM_CLOSE 종료 코드 0). x64 도 통과.
+  - 확인 못 함: ARM64 PC 의 PowerPoint 로 PPT 생성(실행기에 Office 없음), 실제 ARM64 PC 화면, Windows 10 on Arm.
 
 ## 11. 구현 시 주의사항 (검증된 함정)
 - **CTkToplevel 사용 금지** → `ui_widgets._Modal`(창 내부 오버레이) 상속. CTkToplevel 은 생성 때마다 `bind_all("<Button-1>")`를 누적하고
