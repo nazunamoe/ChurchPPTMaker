@@ -20,6 +20,20 @@
     `build.ps1` 이 `python version.py --write-info build\version_info.txt` → PyInstaller `--version-file` 로 exe 파일/제품 버전에 반영.
     `build.bat -Version 1.2.0` 은 `version.py --set` 으로 파일을 고친 뒤 빌드. 버전을 화면·문서에 하드코딩하지 말 것.
   - `build.ps1` 은 **UTF-8 BOM + CRLF** 로 유지 (Windows PowerShell 5.1 은 BOM 없는 파일을 ANSI로 읽어 한글이 깨짐).
+    5.1 은 `$ErrorActionPreference='Stop'` 에서 리다이렉트한 네이티브 stderr 만으로도 중단되므로 Python 을 떠보는 함수는 안에서 Continue.
+  - **CPU(x64·ARM64)**: `-Arch auto|x64|arm64`(auto = PC 의 CPU, ARM64 PC 에 ARM64 Python 이 없으면 x64), `-Python <python.exe>`.
+    PyInstaller 는 교차 빌드가 안 되므로 그 CPU 용 Python(`sysconfig.get_platform()` = `win-amd64`/`win-arm64`, tkinter 포함)을
+    py 런처 목록·PATH 에서 찾아 CPU 별 가상환경(`.venv` / `.venv-arm64`, 다른 CPU·다른 Python 이면 `venv --clear`)으로 빌드.
+    결과 `dist\ChurchPPTMaker.exe` / `dist\ChurchPPTMaker-arm64.exe`(exe 버전 정보의 원래 파일 이름도 — `version.py --write-info 경로 이름`),
+    마지막에 PE 헤더 Machine 으로 CPU 확인. PC 의 CPU 는 레지스트리의 시스템 `PROCESSOR_ARCHITECTURE`(에뮬레이션 프로세스의 환경
+    변수는 에뮬레이션 CPU). x64 PC 에서는 ARM64 빌드 불가 → `.github/workflows/build.yml`(GitHub Actions, `windows-11-arm`
+    실행기 — 공개 저장소 무료)이 x64·ARM64 를 빌드하고 `tools/smoke_test.py` 로 시험한 뒤 Artifacts 로 올림.
+    모든 패키지(pywin32·PyInstaller 부트로더 포함)에 win_arm64 휠이 있음(2026-11-17 확인, Python 3.10~3.14).
+  - `tools/smoke_test.py`: PowerPoint 없이 CPU 마다 달라질 수 있는 부분만 — Python CPU, pywin32 COM(Scripting.Dictionary),
+    모듈 불러오기(Win32 함수 이름), ctypes 콜백(창 틀 WM_NCCALCSIZE → 제목 표시줄이 실제로 없어졌는지, `_FrameHider` WinEvent 훅),
+    메인 창 몇 초 + 콜백 오류 없음. `--exe` 는 빌드한 exe 의 PE CPU·창 뜸·WM_CLOSE 로 종료 코드 0. 소스·exe 를 임시 폴더에 복사해
+    `setup_done` 설정으로 실행(사용자 설정을 건드리지 않고 마법사의 `wait_window` 에서 멈추지 않게). ctypes 콜백·Win32 호출을 새로
+    넣으면 여기에도 확인을 더할 것 — ARM64 에서 확인할 수 있는 곳은 이 시험뿐.
   - 패키징 시 `config_manager` 가 `sys.frozen` 을 보고 exe 폴더를 프로그램 폴더로 사용.
   - 아이콘: `--icon assets/app.ico`(exe) + `--add-data assets/app.ico;assets`(창). `main.ICON_PATH` 는 `sys._MEIPASS` 기준.
     CTk 는 200ms 뒤 기본 아이콘으로 덮어쓰므로 생성 직후 `iconbitmap()` 호출 필수. 작업 표시줄 아이콘은 Tk 생성 전
@@ -33,8 +47,10 @@ ChurchPPTMaker/
 ├─ window_frame.py     Windows 제목 표시줄을 없애는 창 틀 처리(CustomFrame: WM_NCCALCSIZE 서브클래스, 창 옮기기·위쪽 크기 조절)
 ├─ help_content.py     프로그램 안 도움말 내용 (HELP_SECTIONS: 절 제목 + 간단한 표기). 사용법이 바뀌면 README 와 함께 갱신
 ├─ requirements.txt    실행 패키지 / requirements-build.txt  빌드용(+PyInstaller)
-├─ build.bat, build.ps1  exe 빌드 스크립트 (.venv 자동 생성, -Version 으로 버전 변경)
+├─ build.bat, build.ps1  exe 빌드 스크립트 (CPU 별 .venv 자동 생성, -Arch x64/arm64, -Version 으로 버전 변경)
 ├─ version.py          프로그램 버전·이름 (화면 제목과 exe 버전 정보의 기준)
+├─ tools/smoke_test.py 실행 시험 (PowerPoint 없이 — ARM64 빌드 확인용, §2)
+├─ .github/workflows/build.yml  GitHub Actions: x64·ARM64 exe 빌드 + 실행 시험 + Artifacts (푸시(.md 만이면 제외)·v 태그·수동)
 ├─ assets/app.ico     프로그램 아이콘 (창·작업 표시줄·exe, 16~256px 다중 크기)
 ├─ main.py             진입점 + 메인 윈도우(App), 패널 구성, 드래그&드롭, 프리셋/생성 이벤트
 ├─ ui_widgets.py       재사용 위젯: 공통 색/폰트, _Modal(창 내부 오버레이 다이얼로그), CalendarPopup, ItemDialog,
@@ -505,6 +521,13 @@ Bible2PPT.exe <성경 구절...> [옵션]
   수정됨이면 한 번에 저장·프리셋 고를 때 저장 안 됨 안내·되돌리기가 프리셋 표시도 되돌림 (§9).
   - 검증: 격리 설정 UI 26건(수정됨 표시/해제, 닫았다 켠 뒤 이어짐, 다른·같은 프리셋 고르기 확인 문구, 한 번에 저장, 형식만 변경,
     비우기·프리셋 적용 되돌리기, 삭제된 프리셋, 잘못된 `last_preset` 값). 화면 캡처로 콤보 글자 모양은 확인 안 함.
+- 2026-11-17: ARM64(Windows on Arm) 빌드 — `build.ps1 -Arch`, CPU 별 가상환경·exe 이름, GitHub Actions(x64·ARM64), 실행 시험 (§2).
+  코드 자체는 고칠 것이 없었음: ctypes 는 모두 argtypes/restype 지정(64비트 핸들), WinEvent 훅은 OUTOFCONTEXT(같은 CPU 의 DLL
+  주입이 필요 없음), PowerPoint 는 별도 프로세스 COM, Bible2PPT 는 별도 실행이라 CPU 가 달라도 됨.
+  - 검증(이 PC 는 x64): 빌드 함수(5.1 — PC CPU, Python 찾기 — 이 PC 의 Microsoft Store `python` 별칭은 떠보기 실패로 멈춤 없이 건너뜀, `py -0p` 줄, PE 헤더: PyInstaller ARM64 부트로더 4개가
+    arm64), x64 PC 에서 `-Arch arm64`·잘못된 `-Python`·CPU 가 다른 `-Python` 안내, x64 빌드(가상환경 재사용, 버전 정보 이름),
+    Actions 와 같은 명령 순서, 실행 시험 소스·exe 통과(+ 일부러 다른 CPU 기대 → 실패, 보통 창이면 제목 표시줄 45px 로 구별됨).
+  - 확인 못 함: 실제 ARM64 에서의 빌드·실행(Actions 를 아직 돌리지 않음), ARM64 PC 의 PowerPoint 로 PPT 생성, Windows 10 on Arm.
 
 ## 11. 구현 시 주의사항 (검증된 함정)
 - **CTkToplevel 사용 금지** → `ui_widgets._Modal`(창 내부 오버레이) 상속. CTkToplevel 은 생성 때마다 `bind_all("<Button-1>")`를 누적하고

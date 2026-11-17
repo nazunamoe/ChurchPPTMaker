@@ -18,7 +18,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 운영체제 | Windows 10 / 11 |
+| 운영체제 | Windows 10 / 11 (x64), Windows 11 on Arm (ARM64 — [빌드](#arm64-windows-on-arm-용-exe) 참고) |
 | PowerPoint | Microsoft PowerPoint 설치 필수 (2016 이상 권장) |
 | Python | 3.10 이상 (소스로 실행하거나 빌드할 때만 필요) |
 | Bible2PPT | 말씀(성경 구절) 기능을 쓸 때만 필요 — [nazunamoe/Bible2PPT](https://github.com/nazunamoe/Bible2PPT) |
@@ -65,10 +65,32 @@ exe 파일 속성(탐색기 [속성] → [자세히]의 파일/제품 버전)에
 `-Version` 을 주면 `version.py` 를 고친 뒤 빌드하고, 생략하면 현재 버전 그대로 빌드합니다. 형식은 `주.부.수정`(예: `1.2.0`).
 
 `build.bat`은 실행 정책과 관계없이 `build.ps1`을 실행하며, `build.ps1`은 다음을 자동으로 처리합니다.
-1. 프로그램 폴더에 `.venv` 가상환경 생성 (이미 있으면 재사용)
+1. 프로그램 폴더에 가상환경 생성 — x64 는 `.venv`, ARM64 는 `.venv-arm64` (이미 있으면 재사용, 다른 CPU 용이면 다시 만듦)
 2. `requirements-build.txt` 설치 (실행 패키지 + PyInstaller)
 3. `version.py` 로 exe 버전 정보 파일(`build\version_info.txt`) 생성
-4. PyInstaller로 단일 exe 빌드
+4. PyInstaller로 단일 exe 빌드, 만든 exe 가 원한 CPU 용인지 확인
+
+### ARM64 (Windows on Arm) 용 exe
+
+ARM64 PC(Surface Pro·Snapdragon 노트북 등, Windows 11)에서는 x64 exe 도 Windows 의 에뮬레이션으로 실행되지만,
+ARM64 용 exe 는 에뮬레이션 없이 바로 실행됩니다.
+
+```powershell
+.\build.bat -Arch arm64    # → dist\ChurchPPTMaker-arm64.exe
+.\build.bat -Arch x64      # → dist\ChurchPPTMaker.exe
+```
+
+- `-Arch` 를 생략하면 빌드하는 PC 의 CPU 용으로 만듭니다 (ARM64 PC 에 ARM64 Python 이 없으면 x64 용).
+- PyInstaller 는 다른 CPU 용 exe 를 만들지 못하므로 **ARM64 용은 ARM64 PC 에서 ARM64 Python 으로만** 빌드됩니다.
+  python.org 에서 `Windows installer (ARM64)` 를 설치하세요. x64 PC 에서 `-Arch arm64` 를 주면 안내와 함께 멈춥니다.
+- ARM64 PC 가 없으면 **GitHub Actions** 가 만듭니다: GitHub 에 푸시하면(문서만 바뀐 푸시 제외) 자동으로,
+  또는 저장소 [Actions] → [build] → [Run workflow](main 에 합친 뒤부터 보임)·`v` 로 시작하는 태그로.
+  x64·ARM64 exe 를 함께 빌드하고 실행 시험(`tools\smoke_test.py` — PowerPoint 없이 창 띄우기·창 틀·COM 확인)까지 한 뒤,
+  실행 결과 화면 아래 Artifacts 에 `ChurchPPTMaker-x64`·`ChurchPPTMaker-arm64` 로 올립니다.
+- 특정 Python 으로 빌드하려면 `-Python C:\…\python.exe` (CPU 는 그 Python 을 따름).
+- ARM64 PC 의 PowerPoint(Microsoft 365)·Bible2PPT 는 x64·ARM64 어느 쪽 exe 와도 함께 동작합니다
+  (PowerPoint 는 별도 프로세스로 COM 연결, Bible2PPT 는 별도 프로그램으로 실행).
+  단, 실제 ARM64 PC 에서 PPT 생성까지 확인하지는 못했습니다 — 문제가 있으면 x64 exe 를 쓰세요.
 
 직접 빌드하려면:
 
@@ -78,7 +100,7 @@ python version.py --write-info build\version_info.txt
 pyinstaller --noconfirm --onefile --windowed --name ChurchPPTMaker --version-file build\version_info.txt --collect-data customtkinter main.py
 ```
 
-- 결과물: `dist\ChurchPPTMaker.exe` (약 14MB)
+- 결과물: `dist\ChurchPPTMaker.exe` (약 15MB, ARM64 는 `dist\ChurchPPTMaker-arm64.exe`)
 - `--collect-data customtkinter`는 UI 테마 파일을 포함하기 위해 **반드시** 필요합니다.
 - exe를 처음 실행하면 `config.json`, `presets.json`, `templates\`, `hymns\`, `ccm\`, `output\`이 **exe와 같은 폴더**에 만들어집니다.
   다른 컴퓨터로 옮길 때는 exe와 함께 이 파일·폴더들을 같이 복사하면 설정과 템플릿이 그대로 유지됩니다.
@@ -443,8 +465,10 @@ ChurchPPTMaker/
 ├─ models.py           순서 항목 정의
 ├─ requirements.txt    필요한 Python 패키지
 ├─ requirements-build.txt  빌드용 패키지 (requirements.txt + PyInstaller)
-├─ build.bat / build.ps1   exe 빌드 스크립트
+├─ build.bat / build.ps1   exe 빌드 스크립트 (-Arch x64 / arm64)
 ├─ version.py              프로그램 버전 (화면 제목·exe 속성)
+├─ tools/smoke_test.py     실행 시험 (PowerPoint 없이 창 띄우기 — ARM64 빌드 확인용)
+├─ .github/workflows/build.yml  GitHub Actions: x64·ARM64 exe 빌드 + 실행 시험
 ├─ assets/app.ico         프로그램 아이콘
 └─ CLAUDE.md           개발용 상세 문서 (구조·규칙·개발 히스토리)
 ```
