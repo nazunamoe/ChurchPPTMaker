@@ -3,7 +3,8 @@
 명령줄 (build.ps1 이 사용):
   python version.py                          현재 버전 출력
   python version.py --set 1.2.0              버전 변경 (이 파일의 __version__ 줄을 고침)
-  python version.py --write-info <path>      PyInstaller --version-file 용 exe 버전 정보 파일 생성
+  python version.py --write-info <path> [exe 이름]   PyInstaller --version-file 용 exe 버전 정보 파일 생성
+                                             (exe 이름: 확장자 없이, 생략하면 EXE_NAME — ARM64 빌드는 ChurchPPTMaker-arm64)
 """
 from __future__ import annotations
 
@@ -35,16 +36,16 @@ def set_version(version: str) -> None:
     path.write_bytes(new.encode("utf-8"))
 
 
-def version_info_text(version: str) -> str:
+def version_info_text(version: str, exe_name: str = EXE_NAME) -> str:
     """PyInstaller --version-file 형식 (탐색기 [속성] → [자세히] 에 표시되는 파일/제품 버전)."""
     nums = tuple(int(x) for x in version.split(".")) + (0,)
     fields = {
         "CompanyName": "",
         "FileDescription": APP_NAME,
         "FileVersion": version,
-        "InternalName": EXE_NAME,
+        "InternalName": exe_name,
         "LegalCopyright": "",
-        "OriginalFilename": f"{EXE_NAME}.exe",
+        "OriginalFilename": f"{exe_name}.exe",
         "ProductName": APP_NAME,
         "ProductVersion": version,
     }
@@ -76,10 +77,10 @@ def _main(argv: list[str]) -> int:
         set_version(argv[1])
         print(argv[1])
         return 0
-    if argv[0] == "--write-info" and len(argv) == 2:
+    if argv[0] == "--write-info" and len(argv) in (2, 3):
         out = Path(argv[1])
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(version_info_text(__version__), encoding="utf-8")
+        out.write_text(version_info_text(__version__, *argv[2:]), encoding="utf-8")
         print(__version__)
         return 0
     print(__doc__, file=sys.stderr)
